@@ -1,0 +1,5 @@
+docs/
+.claude/
+research/予備実験用/
+__pycache__/
+*.pyc

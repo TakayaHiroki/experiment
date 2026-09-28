@@ -1,0 +1,13 @@
+# 公開時に含めないもの
+# 1. データセット本体と，それを加工・解釈したもの（著作権上の問題になりうる）
+BEWT/
+apps/
+corpus/
+faults/
+generated/
+snapshots/
+# 2. 実行結果（実行環境によって変わりうる）
+embeddings/
+order/
+results/
+logs/
