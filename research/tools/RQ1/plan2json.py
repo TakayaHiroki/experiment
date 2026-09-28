@@ -69,15 +69,15 @@ def build_text(c, variant):
     return SEP.join(p.strip() for p in parts if p and p.strip())
 
 
-def convert(md_path, outdir, app=None):
+def build(md_path, app=None):
     app = app or os.path.basename(md_path).split("-test-plan")[0]
     with open(md_path, encoding="utf-8") as f:
         text = f.read()
     cases = parse_plan(text)
     if not cases:
         print(f"  [警告] {md_path} からテストケースを抽出できない")
-        return 0
-    os.makedirs(outdir, exist_ok=True)
+        return None
+    by_variant = {}
     for v in VARIANTS:
         recs = []
         for i, c in enumerate(cases):
@@ -94,12 +94,20 @@ def convert(md_path, outdir, app=None):
                 "expects": c["expects"],
                 "variant": v,
             })
-        out = os.path.join(outdir, f"{app}_{v}.json")
-        with open(out, "w", encoding="utf-8") as f:
-            json.dump(recs, f, ensure_ascii=False, indent=2)
+        by_variant[v] = recs
+    return app, len(cases), by_variant
 
-    print(f"  {app}: {len(cases)}件 → {len(VARIANTS)}バリアント出力")
-    return len(cases)
+
+def write(outdir, built):
+    total = 0
+    os.makedirs(outdir, exist_ok=True)
+    for app, n, by_variant in built:
+        for v, recs in by_variant.items():
+            with open(os.path.join(outdir, f"{app}_{v}.json"), "w", encoding="utf-8") as f:
+                json.dump(recs, f, ensure_ascii=False, indent=2)
+        print(f"  {app}: {n}件 → {len(VARIANTS)}バリアント出力")
+        total += n
+    return total
 
 
 def combine(outdir):
@@ -130,17 +138,17 @@ def main():
                     help="全アプリ結合ファイル ALL_*.json を作らない")
     a = ap.parse_args()
 
-    total = 0
     if a.input_dir:
         files = sorted(glob.glob(os.path.join(a.input_dir, "*.md")))
         if not files:
             sys.exit(f"{a.input_dir} に .md が無い")
-        for f in files:
-            total += convert(f, a.outdir)
+        built = [b for b in (build(f) for f in files) if b]
+        total = write(a.outdir, built)
         if not a.no_combine:
             combine(a.outdir)
     elif a.input:
-        total += convert(a.input, a.outdir, a.app)
+        b = build(a.input, a.app)
+        total = write(a.outdir, [b] if b else [])
     else:
         sys.exit("--input か --input-dir のどちらかを指定すること")
     print(f"合計 {total} 件 → {a.outdir}")
