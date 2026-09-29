@@ -2,12 +2,12 @@
 """GPU不要の語彙的手法でベクトル化する
 
 usage:
-  python baseline_embed.py --input corpus/bewt/json/kanboard_full.json \
+  python tools/RQ1/baseline_embed.py --input corpus/bewt/json/kanboard_full.json \
       --output embeddings/bewt/tfidf/kanboard_full.json --method tfidf
 """
 import argparse, json, os, sys, time
+import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.decomposition import TruncatedSVD
 from sklearn.preprocessing import Normalizer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -35,23 +35,22 @@ def emb_tfidf(texts, min_df):
 
 
 def emb_lsa(texts, dim):
-    X = TfidfVectorizer(stop_words="english", sublinear_tf=True).fit_transform(texts)
+    X = TfidfVectorizer(stop_words="english", sublinear_tf=True).fit_transform(texts).toarray()
     full = dim is None
-    # 取れる次元の上限．語彙数-1 とテスト数-1 の小さい方
-    cap = min(X.shape[1] - 1, len(texts) - 1)
+    cap = min(X.shape)
     req = cap if full else dim
     dim = min(req, cap)
     if dim < req:
         print(f"[WARN] lsa: 指定 {req} 次元は不可能．{dim} 次元に切り下げた "
               f"(テスト数 {len(texts)} / 語彙数 {X.shape[1]})")
     if not full and dim >= len(texts) - 1:
-        print(f"[WARN] lsa: 次元 {dim} = テスト数-1 のため圧縮になっていない．"
+        print(f"[WARN] lsa: 次元 {dim} がテスト数-1 以上のため圧縮になっていない．"
               f"tfidf のほぼ回転であり独立した表現ではない")
     if dim < 2:
-        return X.toarray()
-    # 乱数を固定して再現させる
-    Z = TruncatedSVD(dim, random_state=0).fit_transform(X)
-    return Normalizer().fit_transform(Z)
+        raise SystemExit(f"lsa: 取れる次元が {dim} で2未満 (テスト数 {len(texts)} / 語彙数 {X.shape[1]})")
+    _, _, Vt = np.linalg.svd(X, full_matrices=False)
+    rows, inv = np.unique(X, axis=0, return_inverse=True)
+    return Normalizer().fit_transform(rows @ Vt[:dim].T)[inv.reshape(-1)]
 
 
 def main():
@@ -68,9 +67,6 @@ def main():
     titles, texts = load(a.input)
     print(f"Loaded {len(texts)} test cases. Encoding with {a.method}...")
 
-    c0, t0 = time.process_time(), time.perf_counter()
-    t_load, c_load = time.perf_counter() - t0, time.process_time() - c0
-
     c1, t1 = time.process_time(), time.perf_counter()
     if a.method == "tfidf":
         E = emb_tfidf(texts, a.min_df)
@@ -84,12 +80,11 @@ def main():
     tmp = a.output + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False)
-    # 途中で止まっても壊れたファイルを残さない
     os.replace(tmp, a.output)
 
     print(_measure.timing(
-        t_load=f"{t_load:.2f}", t_encode=f"{t_encode:.2f}",
-        c_load=f"{c_load:.2f}", c_encode=f"{c_encode:.2f}",
+        t_load="0.00", t_encode=f"{t_encode:.2f}",
+        c_load="0.00", c_encode=f"{c_encode:.2f}",
         n=len(texts), device="cpu", params=0,
         peak_rss_mb=_measure.peak_rss_mb(), peak_gpu_mb=0))
     print(f"\nEmbeddings saved to {a.output} ({len(results)} entries, dim={E.shape[1]})")

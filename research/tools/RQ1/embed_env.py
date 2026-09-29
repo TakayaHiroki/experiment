@@ -19,7 +19,6 @@ a = ap.parse_args()
 
 models = {}
 warm_bytes = 0
-# 読み込みごとに確保し直すと，その CPU 時間が計測に混ざる
 _buf = memoryview(bytearray(64 << 20))
 t0, c0 = time.perf_counter(), time.process_time()
 for m in a.models:
@@ -38,7 +37,6 @@ for m in a.models:
     warm_bytes += size
 
 if a.warm:
-    # --warm は先読みだけで終わる．その時間も記録に出す
     print(f"warmed {len(models)} model(s)", file=sys.stderr)
     print(f"[WARM] t_warm={time.perf_counter() - t0:.2f} c_warm={time.process_time() - c0:.2f} "
           f"warm_bytes={warm_bytes}", file=sys.stderr)

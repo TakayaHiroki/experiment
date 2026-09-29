@@ -6,7 +6,6 @@ import sys
 
 def resolve_device(name):
     import torch
-    # cuda が使えないとき黙って CPU に落とさない
     if name == "cuda" and not torch.cuda.is_available():
         raise SystemExit("--device cuda を指定したが CUDA が使えない（torch が CPU 版か，GPU が無い）")
     return name
@@ -33,7 +32,6 @@ class _MemCounters(ctypes.Structure):
 def peak_rss_mb():
     if sys.platform == "win32":
         cur = ctypes.windll.kernel32.GetCurrentProcess
-        # ハンドルは64bit．既定の int では切り詰められて呼び出しが失敗する
         cur.restype = ctypes.c_void_p
         cur.argtypes = []
         c = _MemCounters()

@@ -104,7 +104,6 @@ public static class CpuSets {
             int off = 0;
             while (off < len) {
                 int size = Marshal.ReadInt32(buf, off);
-                // 論理番号，効率クラス，物理コア番号．効率クラスが大きいほど性能コア
                 list.Add(new int[] { Marshal.ReadByte(buf, off + 14), Marshal.ReadByte(buf, off + 18), Marshal.ReadByte(buf, off + 15) });
                 off += size;
             }
@@ -121,7 +120,6 @@ function Get-CpuRaw {
 function Get-BusyFraction($a, $b) {
     $dt = [double]($b.Timestamp_Sys100NS - $a.Timestamp_Sys100NS)
     if ($dt -le 0) { return 0.0 }
-    # このカウンタは遊休時間を数えるので 1.0 から引く．反転は誤りではない
     return [math]::Max(0.0, 1.0 - ([double]($b.PercentProcessorTime - $a.PercentProcessorTime) / $dt))
 }
 
@@ -163,7 +161,6 @@ $topClass = ($cpus | ForEach-Object { $_[1] } | Measure-Object -Maximum).Maximum
 if ($AllCores) {
     $workCpus = @($cpus)
 } else {
-    # Pコアの各物理コアから論理番号が最小の1つだけを使う
     $workCpus = @($cpus | Where-Object { $_[1] -eq $topClass } | Group-Object { $_[2] } |
                   ForEach-Object { $_.Group | Sort-Object { $_[0] } | Select-Object -First 1 } |
                   Sort-Object { $_[0] })
@@ -193,7 +190,6 @@ if ($DryRun) {
     exit 0
 }
 
-# 二重起動を拒否する
 $mutex = New-Object System.Threading.Mutex($false, "Global\experiment_run_embeddings")
 $owned = $false
 try { $owned = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $owned = $true }
@@ -210,12 +206,26 @@ try {
         exit 1
     }
 
+    if ($Apps.Count -eq 0) {
+        $Apps = @(Get-ChildItem -Path $CorpusDir -Filter "*_full.json" |
+                  ForEach-Object { $_.BaseName -replace "_full$", "" } |
+                  Where-Object { $IncludeAll -or ($_ -ne "ALL") } | Sort-Object)
+    }
+    $missing = @(foreach ($app in $Apps) { foreach ($variant in $Variants) {
+        $f = Join-Path $CorpusDir "$($app)_$($variant).json"
+        if (-not (Test-Path $f)) { $f } } })
+    if (($Apps.Count -eq 0) -or ($missing.Count -gt 0)) {
+        Write-Host "入力が無い: $(if ($Apps.Count -eq 0) { "$CorpusDir に *_full.json" } else { $missing -join ', ' })" -ForegroundColor Red
+        exit 1
+    }
+
     $self = [System.Diagnostics.Process]::GetCurrentProcess()
     if ($sideMask -ne 0) { $self.ProcessorAffinity = [IntPtr]$sideMask }
 
     $env:OMP_NUM_THREADS = "$Threads"
     $env:MKL_NUM_THREADS = "$Threads"
     $env:KMP_AFFINITY = if ($AllCores) { "verbose,none" } else { "verbose,granularity=fine,compact,1,0" }
+    $env:HF_HUB_OFFLINE = "1"
 
     $logDir = Split-Path $LogFile
     if (-not (Test-Path $logDir)) {
@@ -265,13 +275,6 @@ try {
     Write-Host "電源プラン: $($envInfo.power_scheme)"
     $warmed = @{}
 
-    if ($Apps.Count -eq 0) {
-        $Apps = Get-ChildItem -Path $CorpusDir -Filter "*_full.json" |
-                ForEach-Object { $_.BaseName -replace "_full$", "" } |
-                # ALL_* はアプリ横断なので既定では作らない
-                Where-Object { $IncludeAll -or ($_ -ne "ALL") } | Sort-Object
-    }
-
     $total = 0; $skipped = 0; $failed = 0; $noisy = 0
     $tWarm = ""; $cWarm = ""; $warmBytes = ""
 
@@ -290,8 +293,6 @@ try {
                 $outDir  = Join-Path $OutRoot  "$Corpus\$model"
                 $outFile = Join-Path $outDir   "$($app)_$($variant).json"
 
-                if (-not (Test-Path $inFile)) { continue }
-                # 既存の出力は飛ばす．途中で止めても再開できる
                 if ((Test-Path $outFile) -and (-not $Force)) { $skipped++; continue }
 
                 $conf = @(Get-ConflictingProcess)
@@ -329,6 +330,7 @@ try {
                 }
 
                 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+                if (Test-Path $outFile) { Remove-Item $outFile }
                 Write-Host "[$model] $app / $variant ..." -NoNewline
 
                 if ($isBaseline) {
@@ -342,7 +344,6 @@ try {
 
                 $selfCpu0 = $self.TotalProcessorTime.TotalSeconds
                 $raw0 = Get-CpuRaw
-                # 子プロセスを固定先のコアで起動するため親の割り当てを一時的に切り替える
                 if (-not $AllCores) { $self.ProcessorAffinity = [IntPtr]$workMask }
                 $sw = [System.Diagnostics.Stopwatch]::StartNew()
                 $p = Start-Process -FilePath "python" -ArgumentList $argLine -NoNewWindow -PassThru `
@@ -407,7 +408,6 @@ try {
                 $bindingOk = $true
                 if ((-not $isBaseline) -and (-not $AllCores) -and ($Device -eq "cpu")) {
                     $outside = @($boundProcs | Where-Object { $workIds -notcontains [int]$_ })
-                    # OpenMP はスレッドを作り直すたびに報告するので報告の行数はスレッド数より多くなりうる
                     $bindingOk = ($thr -eq "$Threads") -and ($bound.Count -ge $Threads) -and
                                  ($uniq.Count -eq $Threads) -and ($outside.Count -eq 0)
                 }
@@ -439,7 +439,6 @@ try {
                 "$cWarm,$cLoad,$cFirst,$cEnc,$childCpu," +
                 "$busy,$otherPct,$peakMB,$rssMB,$gpuMB,$memMin,$envName,$status" |
                     Out-File -FilePath $LogFile -Append -Encoding utf8
-                # 先読みの値は，それが起きた行にだけ入れる
                 $tWarm = ""; $cWarm = ""; $warmBytes = ""
             }
         }

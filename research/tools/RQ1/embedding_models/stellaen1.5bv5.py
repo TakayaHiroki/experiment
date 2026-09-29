@@ -24,12 +24,10 @@ BATCH = int(BATCH)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _measure
 
-# 演算内の並列は OMP_NUM_THREADS に従う．演算間の並列は使わない
 torch.set_num_interop_threads(1)
 
 
 @torch.no_grad()
-# trust_remote_code の読み込みで重みと rope 設定が崩れるため，保存ファイルから張り直す
 def repair_remote_model(model):
     auto = model[0].auto_model
     params = auto.state_dict()
@@ -49,7 +47,6 @@ def repair_remote_model(model):
         raise SystemExit(f"{MODEL} の保存ファイルに無い重みがある: {missing[:3]}")
 
     cfg = auto.config
-    # rope の基数と cos/sin の表を明示的に作り直す
     base = (getattr(cfg, "rope_parameters", None) or {}).get("rope_theta") or cfg.rope_theta
     seq_len = min(model.max_seq_length, cfg.max_position_embeddings)
     for layer in auto.layers:
@@ -62,7 +59,6 @@ def repair_remote_model(model):
     tok = model.tokenizer
     eos = tok.eos_token
     if tok("a")["input_ids"][-1] != tok.eos_token_id:
-        # 入力の末尾に終端トークンが付かない版への対処
         tok.backend_tokenizer.post_processor = processors.Sequence([
             tok.backend_tokenizer.post_processor,
             processors.TemplateProcessing(single=f"$A {eos}", pair=f"$A {eos} $B:1 {eos}:1",
@@ -89,7 +85,6 @@ try:
     with open(a.input, encoding="utf-8") as f:
         tests = json.load(f)
     titles = [t["title"] for t in tests]
-    # 前置きは本文の直前に付ける．切り捨ての判定にも含まれる
     texts = [PREFIX + t["text_for_embedding"] for t in tests]
 except (json.JSONDecodeError, UnicodeDecodeError, TypeError, KeyError) as e:
     raise SystemExit(f"{a.input} を読めない（title と text_for_embedding を持つ JSON の配列が要る）: {e!r}")
@@ -104,20 +99,17 @@ model = SentenceTransformer(MODEL, trust_remote_code=TRUST_REMOTE_CODE, model_kw
 repair_remote_model(model)
 t_load, c_load = time.perf_counter() - t0, time.process_time() - c0
 dtype = next(model.parameters()).dtype
-# 指定した精度で読み込めたか確かめる
 if dtype != DTYPE:
     raise SystemExit(f"{MODEL} が {DTYPE} ではなく {dtype} で読み込まれた")
 n_params = _measure.count_params(model)
 
 lengths = [len(ids) for ids in model.tokenizer(texts)["input_ids"]]
-# 上限を超えた入力は後ろが切り捨てられる．件数を記録する
 truncated = [i for i, n in enumerate(lengths) if n > model.max_seq_length]
 if truncated:
     print(f"[WARN] {len(truncated)} 件が上限 {model.max_seq_length} トークンを超え，後ろを切り捨てた: index {truncated}")
 
 _measure.sync(DEVICE)
 cf, tf = time.process_time(), time.perf_counter()
-# 初回呼び出しの準備時間を t_encode に含めない
 model.encode(texts[:1], batch_size=1, show_progress_bar=False, normalize_embeddings=True)
 _measure.sync(DEVICE)
 t_first, c_first = time.perf_counter() - tf, time.process_time() - cf
@@ -131,7 +123,6 @@ out = [{"index": i, "title": titles[i], "embedding": emb[i].tolist()} for i in r
 tmp = a.output + ".tmp"
 with open(tmp, "w", encoding="utf-8") as f:
     json.dump(out, f, ensure_ascii=False)
-# 途中で止まっても壊れたファイルを残さない
 os.replace(tmp, a.output)
 
 print(_measure.timing(
