@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """BEWT コーパスに「正解ラベル（機能分類）」が存在しないことを，成果物から確認する（P1-4）
 
-usage: python check_no_labels.py [--file corpus/bewt/json/ALL_full.json]
+usage: python tools/RQ1/check_no_labels.py [--file corpus/bewt/json/ALL_full.json]
 """
 import argparse, collections, json, sys
 

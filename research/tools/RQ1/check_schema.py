@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """埋め込みスクリプト（embedding_models/*.py）が，生成したJSONをそのまま読めるかを検証する（合格基準 D-13）
 
-usage: python check_schema.py --dir corpus/bewt/json
+usage: python tools/RQ1/check_schema.py --dir corpus/bewt/json
 """
 import argparse, glob, json, os, sys
 
@@ -38,32 +38,31 @@ def check_file(path):
         if not isinstance(tx, str) or not tx.strip():
             errs.append(f"[{i}] text_for_embedding が空または文字列でない")
 
-    base = os.path.basename(path)[:-5]
-    fname_v = base.rsplit("_", 1)[-1] if "_" in base else ""
-    if fname_v in VARIANTS:
-        bad = [i for i, t in enumerate(tests) if t.get("variant") != fname_v]
-        if bad:
-            errs.append(f"variant 欄がファイル名と一致しない {len(bad)}件"
-                        f"（例 [{bad[0]}]: {tests[bad[0]].get('variant')!r} "
-                        f"≠ {fname_v!r}）")
-        f = PARTS.get(fname_v)
-        if f:
-            ng = []
-            for i, t in enumerate(tests):
-                try:
-                    parts = f(t)
-                    ok = isinstance(parts, list) and all(isinstance(x, str) for x in parts)
-                except (KeyError, TypeError):
-                    ok = False
-                if not ok:
-                    ng.append(i)
-                    continue
-                want = " ".join(x.strip() for x in parts if x.strip())
-                if want != t["text_for_embedding"]:
-                    ng.append(i)
-            if ng:
-                errs.append(f"**text_for_embedding を成分から復元できない {len(ng)}件**"
-                            f"（例 [{ng[0]}]）．監査できない")
+    app, sep, fname_v = os.path.basename(path)[:-len(".json")].rpartition("_")
+    if not sep or not app or fname_v not in VARIANTS:
+        errs.append(f"ファイル名が {{app}}_{{{'|'.join(VARIANTS)}}}.json の形でない")
+        return errs, len(tests)
+    bad = [i for i, t in enumerate(tests) if t.get("variant") != fname_v]
+    if bad:
+        errs.append(f"variant 欄がファイル名と一致しない {len(bad)}件"
+                    f"（例 [{bad[0]}]: {tests[bad[0]].get('variant')!r} "
+                    f"≠ {fname_v!r}）")
+    ng = []
+    for i, t in enumerate(tests):
+        try:
+            parts = PARTS[fname_v](t)
+            ok = isinstance(parts, list) and all(isinstance(x, str) for x in parts)
+        except (KeyError, TypeError):
+            ok = False
+        if not ok:
+            ng.append(i)
+            continue
+        want = " ".join(x.strip() for x in parts if x.strip())
+        if want != t["text_for_embedding"]:
+            ng.append(i)
+    if ng:
+        errs.append(f"**text_for_embedding を成分から復元できない {len(ng)}件**"
+                    f"（例 [{ng[0]}]）．監査できない")
     return errs, len(tests)
 
 
