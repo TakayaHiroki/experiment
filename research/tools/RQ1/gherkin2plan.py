@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""BEWT Gherkin (.feature) -> Playwright planner 形式のテストプラン(Markdown) と出典 JSON
+"""BEWT Gherkin (.feature) -> Playwright planner 形式のテストプラン(Markdown) と検証用 JSON
 
 usage: python gherkin2plan.py <BEWT_ROOT> <APP> <OUT.md> <SOURCE.json>
   区切り行は md に出さない．When を含まない区間の Then/And は perform

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""出典 JSON の役割が変換規則どおりで，md とベクトル化に渡すテキストの成分（title・steps・expects）が BEWT の原文の行そのものだけでできていることを検証する
+"""検証用 JSON の役割が変換規則どおりで，md とベクトル化に渡すテキストの成分（title・steps・expects）が BEWT の原文の行そのものだけでできていることを検証する
 
 usage: python tools/RQ1/check_no_injection.py [--dir corpus/bewt/json] [--bewt BEWT] [--source corpus/bewt/source] [--plans corpus/bewt/plans]
 """
@@ -87,8 +87,8 @@ def order_key(spec):
 
 
 def check_source(src, feats, apps):
-    ng = [f"出典 JSON に無い .feature: {a}/{s}" for a, s in sorted(set(feats) - set(src))]
-    ng += [f".feature が無い出典 JSON のテスト: {a}/{s}" for a, s in sorted(set(src) - set(feats))]
+    ng = [f"検証用 JSON に無い .feature: {a}/{s}" for a, s in sorted(set(feats) - set(src))]
+    ng += [f".feature が無い検証用 JSON のテスト: {a}/{s}" for a, s in sorted(set(src) - set(feats))]
     for name, meta in sorted(apps.items()):
         specs = [t["id"].split("/", 1)[1] for t in meta["tests"]]
         if meta["app"] != name or any(not t["id"].startswith(name + "/") for t in meta["tests"]):
@@ -145,7 +145,7 @@ def check_plans(plans_dir, apps):
         if got != md.encode("utf-8"):
             a, b = got.decode("utf-8", "replace").split("\n"), md.split("\n")
             i = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
-            ng.append(f"md が出典 JSON から描いたものと一致しない: {app}-test-plan.md {i + 1} 行目")
+            ng.append(f"md が検証用 JSON から描いたものと一致しない: {app}-test-plan.md {i + 1} 行目")
     return ng
 
 
@@ -175,7 +175,7 @@ def check_file(path, feats, src):
             continue
         got.append((app, spec))
         if (app, spec) not in feats or (app, spec) not in src:
-            ng.append(f"[{i}] .feature か出典 JSON に無い: {app}/{spec}")
+            ng.append(f"[{i}] .feature か検証用 JSON に無い: {app}/{spec}")
             continue
         f_title, body, _ = feats[(app, spec)]
         lines = src[(app, spec)]["lines"]
@@ -187,11 +187,11 @@ def check_file(path, feats, src):
         for name, a, role in (("steps", steps, "perform"), ("expects", expects, "expect")):
             b = [r["text"] for r in lines if r["role"] == role]
             if a != b:
-                ng.append(f"[{i}] {name} が出典 JSON の並びと一致しない（{len(a)} 件 / 出典 {len(b)} 件）（{app}/{spec}）")
+                ng.append(f"[{i}] {name} が検証用 JSON の並びと一致しない（{len(a)} 件 / 検証用 JSON {len(b)} 件）（{app}/{spec}）")
     if len(got) != len(set(got)) or set(got) != want_ids:
-        ng.append(f"テストの過不足か重複がある（{len(got)} 件 / 出典 {len(want_ids)} 件）")
+        ng.append(f"テストの過不足か重複がある（{len(got)} 件 / 検証用 JSON {len(want_ids)} 件）")
     if ng:
-        errs.append(f"**原文または出典 JSON と一致しないものが {len(ng)}件**")
+        errs.append(f"**原文または検証用 JSON と一致しないものが {len(ng)}件**")
         errs += ng[:3]
     return errs, len(tests)
 
@@ -222,10 +222,10 @@ def main():
         sys.exit(f"{a.bewt} の下に .feature が無い")
     src, dup, apps = load_source(a.source)
     if not src:
-        sys.exit(f"{a.source} に出典 JSON が無い")
+        sys.exit(f"{a.source} に検証用 JSON が無い")
 
     ng = total = 0
-    ng += report(f"出典 JSON ({len(src)}件)", check_source(src, feats, apps) + [f"出典 JSON で id が重複: {d}" for d in dup])
+    ng += report(f"検証用 JSON ({len(src)}件)", check_source(src, feats, apps) + [f"検証用 JSON で id が重複: {d}" for d in dup])
     ng += report(f"md ({len(apps)}件)", check_plans(a.plans, apps))
 
     want_files = {f"{app}_{v}.json" for app in {k[0] for k in src} | {"ALL"} for v in VARIANTS}
@@ -247,12 +247,12 @@ def main():
             print(f"[ OK ] {os.path.basename(p)} ({n}件)")
 
     print("=" * 60)
-    print(f"原文 {len(feats)} ファイル / 出典 JSON {len(src)} テスト / md {len(apps)} 件 / 検査したファイル {len(files)} 件 / "
+    print(f"原文 {len(feats)} ファイル / 検証用 JSON {len(src)} テスト / md {len(apps)} 件 / 検査したファイル {len(files)} 件 / "
           f"レコード合計 {total} 件 / 不合格 {ng} 件")
     if ng:
-        print("[FAIL] 出典 JSON，md，ベクトル化に渡すテキストの成分のどれかが原文と変換規則に一致しない")
+        print("[FAIL] 検証用 JSON，md，ベクトル化に渡すテキストの成分のどれかが原文と変換規則に一致しない")
         sys.exit(1)
-    print("[PASS] 出典 JSON の役割は変換規則どおりで，md とベクトル化に渡すテキストの成分は原文の行そのものだけ")
+    print("[PASS] 検証用 JSON の役割は変換規則どおりで，md とベクトル化に渡すテキストの成分は原文の行そのものだけ")
 
 
 if __name__ == "__main__":
