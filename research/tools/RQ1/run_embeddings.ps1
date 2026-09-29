@@ -452,7 +452,7 @@ try {
     if ($noisy -gt 0) {
         Write-Host " status は疑いの印．時間の採否そのものではない" -ForegroundColor Yellow
         Write-Host " ok_unbound / ok_noisy はほかのアプリを閉じ，出力ファイルを消して再実行" -ForegroundColor Yellow
-        Write-Host " ok_lowmem は c_encode_s / t_encode_s が $Threads に近いかで採否を決める（研究フロー手順書 P4-3）" -ForegroundColor Yellow
+        Write-Host " ok_lowmem は c_encode_s / t_encode_s が $Threads に近いかで採否を決める（summarize_embed_runlog.py の 2.）" -ForegroundColor Yellow
     }
     Write-Host "===================================================="
     if ($failed -gt 0) { exit 1 }

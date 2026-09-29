@@ -60,7 +60,7 @@ def main():
     print(f"   時間を使わない条件（本番 < {ENCODE_RATIO_MIN}）: "
           + (" ".join(f"{c}({ratio[c][1]:.2f})" for c in slow) if slow else "なし"))
     if slow:
-        print("   → 所要時間は報告に使わず，メモリのピークとパラメータ数で報告する（完成基準 3）")
+        print("   → 所要時間は報告に使わず，メモリのピークとパラメータ数で報告する")
 
     print("\n3. モデルファイルの先読み（1GiB = 2^30 バイト）")
     for r in rows:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""BEWT コーパスに全アプリにそろった正解ラベル（機能分類）が無いことを，成果物と原文の Feature: 行から確認する（P1-4）
+"""BEWT コーパスに全アプリにそろった正解ラベル（機能分類）が無いことを，成果物と原文の Feature: 行から確認する
 
 usage: python tools/RQ1/check_no_labels.py [--file corpus/bewt/json/ALL_full.json] [--bewt BEWT]
 """
@@ -33,7 +33,7 @@ def main():
 
     if not isinstance(d, list) or not d:
         sys.exit(f"[FAIL] {a.file} がレコードのリストになっていない，または0件．"
-                 "P1-2 からやり直す")
+                 "plan2json.py で作り直すこと")
     bad = [i for i, r in enumerate(d)
            if not isinstance(r, dict) or not r.get("app") or not r.get("spec")]
     if bad:
@@ -66,7 +66,7 @@ def main():
         for k, v in grouped[:10]:
             print(f"        {k}: {v}件")
         print("       外部（データセット提供元）由来の構造なら正解に使える")
-        print("       ファイル名などから自作したものは使わない（-> P1-4）")
+        print("       ファイル名などから自作したものは使わない")
         sys.exit(1)
     if len(with_feature) == len(apps):
         print("[WARN] 全アプリで Feature: がテストをまとめている．全アプリにそろった機能分類がある")

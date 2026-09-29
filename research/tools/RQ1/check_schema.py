@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""埋め込みスクリプト（embedding_models/*.py）が，生成したJSONをそのまま読めるかを検証する（合格基準 D-13）
+"""埋め込みスクリプト（embedding_models/*.py）が，生成したJSONをそのまま読めるかを検証する
 
 usage: python tools/RQ1/check_schema.py --dir corpus/bewt/json
 """
@@ -91,9 +91,9 @@ def main():
     print("=" * 60)
     print(f"ファイル {len(files)} 件 / レコード合計 {total_records} 件 / 不合格 {ng} 件")
     if ng:
-        print("[FAIL] D-13 埋め込みスクリプトがそのまま読めないファイルがある")
+        print("[FAIL] 埋め込みスクリプトがそのまま読めないファイルがある")
         sys.exit(1)
-    print("[PASS] D-13 埋め込みスクリプトがそのまま読めるスキーマ")
+    print("[PASS] 埋め込みスクリプトがそのまま読めるスキーマ")
 
 
 if __name__ == "__main__":

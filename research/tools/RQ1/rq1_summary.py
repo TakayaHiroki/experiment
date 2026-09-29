@@ -40,7 +40,7 @@ def load(path):
     if not os.path.exists(path):
         raise SystemExit(
             path + " が無い．" + chr(10)
-            + "  その表現を作り直すか（P4-1 / P4-3），"
+            + "  その表現を run_embeddings.ps1 で作り直すか，"
             + "使わないなら models の一覧から外すこと．" + chr(10)
             + "  **一部のアプリだけ作ると，そろわないアプリが集計から落ちる．**")
     with open(path, encoding="utf-8") as _f:
@@ -124,7 +124,6 @@ def main():
       "手計算を挟まないことで，集計範囲の違う数値が混ざる事故を防ぐ．\n")
     W("**BEWT コーパスだけの集計である．**"
       f"入力は `{METRIC_DIR}/{{指標}}/{a.corpus_name}_{a.variant}.csv`．\n")
-    W("`mutual_ari`（相互ARI）は使わないので算出もしていない（`実験計画書.md` 4.8）．\n")
 
     n_apps = M["nn_agree"][(*pairs_all[0], "")]["n_apps"]
     n_tests = M["nn_agree"][(*pairs_all[0], "")]["n"]

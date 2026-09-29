@@ -1,6 +1,6 @@
 # Python 3.14.4 / Windows 11 で動作を確認した版（2026-09-16）．
 # torch は CPU 版: pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu
-# transformers 5.10.2 では gte-qwen2 / stella にスクリプト側の修正が要る（研究フロー手順書.md P4-3）．
+# transformers 5.10.2 では gte-qwen2 / stella にスクリプト側の修正が要る（embedding_models の gteqwen2 / stella の各スクリプトの repair_remote_model）．
 # 版を変えたら embedding_models の出力が一致するか確かめ直すこと．
 numpy==2.4.4
 scipy==1.17.1
