@@ -92,8 +92,19 @@ if (-not (Test-Path "tools\RQ1")) {
 }
 
 $Conditions = [ordered]@{}
-$rows = Get-Content "tools\RQ1\conditions.json" -Raw -Encoding UTF8 | ConvertFrom-Json
-foreach ($c in $rows) { $Conditions[$c.name] = $c }
+try { $rows = Get-Content "tools\RQ1\conditions.json" -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json } catch {
+    Write-Host "tools\RQ1\conditions.json を読めない: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
+$Columns = "batch,default,dtype,method,model,name,prefix,repair,trust_remote_code"
+foreach ($c in $rows) {
+    $cols = ($c.PSObject.Properties.Name | Sort-Object) -join ","
+    if ($cols -ne $Columns) {
+        Write-Host "tools\RQ1\conditions.json の $($c.name) の列が違う: $cols" -ForegroundColor Red
+        exit 1
+    }
+    $Conditions[$c.name] = $c
+}
 
 $Models   = @($Models   | ForEach-Object { $_ -split "," } | Where-Object { $_ })
 $Variants = @($Variants | ForEach-Object { $_ -split "," } | Where-Object { $_ })
@@ -250,13 +261,9 @@ try {
                 if ((-not $isBaseline) -and (-not $warmed.ContainsKey($cond.model))) {
                     Write-Host "[$model] モデルのファイルを先読み中..." -NoNewline
                     $warmErr = [System.IO.Path]::GetTempFileName()
-                    $swWarm = [System.Diagnostics.Stopwatch]::StartNew()
                     & python tools\RQ1\embed_env.py --warm --models $cond.model 2>$warmErr
-                    $swWarm.Stop()
                     $wl = @(Get-Content $warmErr -ErrorAction SilentlyContinue) -join " "
                     Remove-Item $warmErr -ErrorAction SilentlyContinue
-                    $tWarm = [math]::Round($swWarm.Elapsed.TotalSeconds, 2)
-                    $cWarm = ""; $warmBytes = ""
                     if ($wl -match "t_warm=([\d.]+)")    { $tWarm     = $Matches[1] }
                     if ($wl -match "c_warm=([\d.]+)")    { $cWarm     = $Matches[1] }
                     if ($wl -match "warm_bytes=(\d+)")   { $warmBytes = $Matches[1] }
@@ -265,7 +272,6 @@ try {
                     $warmed[$cond.model] = $true
                 }
 
-                New-Item -ItemType Directory -Force -Path $outDir | Out-Null
                 if (Test-Path $outFile) { Remove-Item $outFile }
                 Write-Host "[$model] $app / $variant ..." -NoNewline
 

@@ -6,11 +6,10 @@ usage:
   python tools/RQ1/embed_env.py --models Qwen/Qwen3-Embedding-0.6B --warm
 """
 import argparse, json, os, platform, sys, time
-import numpy, sklearn, torch, transformers, sentence_transformers, huggingface_hub, safetensors
 from huggingface_hub import snapshot_download
 
 ENV_KEYS = ["OMP_NUM_THREADS", "MKL_NUM_THREADS", "KMP_AFFINITY", "KMP_BLOCKTIME",
-            "EMB_BATCH", "HF_HUB_OFFLINE", "CUDA_VISIBLE_DEVICES"]
+            "HF_HUB_OFFLINE", "CUDA_VISIBLE_DEVICES"]
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--models", nargs="*", default=[])
@@ -41,6 +40,8 @@ if a.warm:
     print(f"[WARM] t_warm={time.perf_counter() - t0:.2f} c_warm={time.process_time() - c0:.2f} "
           f"warm_bytes={warm_bytes}", file=sys.stderr)
     sys.exit(0)
+
+import numpy, sklearn, torch, transformers, sentence_transformers, huggingface_hub, safetensors
 
 gpus = []
 if torch.cuda.is_available():

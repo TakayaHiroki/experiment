@@ -34,16 +34,16 @@ def emb_tfidf(texts, min_df):
     return v.fit_transform(texts).toarray()
 
 
-def emb_lsa(texts, dim):
+def emb_lsa(texts, dim, warn):
     X = TfidfVectorizer(stop_words="english", sublinear_tf=True).fit_transform(texts).toarray()
     full = dim is None
     cap = min(X.shape)
     req = cap if full else dim
     dim = min(req, cap)
-    if dim < req:
+    if warn and dim < req:
         print(f"[WARN] lsa: 指定 {req} 次元は不可能．{dim} 次元に切り下げた "
               f"(テスト数 {len(texts)} / 語彙数 {X.shape[1]})")
-    if not full and dim >= len(texts) - 1:
+    if warn and not full and dim >= len(texts) - 1:
         print(f"[WARN] lsa: 次元 {dim} がテスト数-1 以上のため圧縮になっていない．"
               f"tfidf のほぼ回転であり独立した表現ではない")
     if dim < 2:
@@ -67,17 +67,17 @@ def main():
     titles, texts = load(a.input)
     print(f"Loaded {len(texts)} test cases. Encoding with {a.method}...")
 
-    def encode():
+    def encode(warn):
         if a.method == "tfidf":
             return emb_tfidf(texts, a.min_df)
-        return emb_lsa(texts, a.dim if a.method == "lsa" else None)
+        return emb_lsa(texts, a.dim if a.method == "lsa" else None, warn)
 
     cf, tf = time.process_time(), time.perf_counter()
-    encode()
+    encode(False)
     t_first, c_first = time.perf_counter() - tf, time.process_time() - cf
 
     c1, t1 = time.process_time(), time.perf_counter()
-    E = encode()
+    E = encode(True)
     t_encode, c_encode = time.perf_counter() - t1, time.process_time() - c1
 
     results = [{"index": i, "title": titles[i], "embedding": E[i].tolist()}
