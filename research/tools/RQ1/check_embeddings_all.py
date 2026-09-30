@@ -8,16 +8,8 @@ import numpy as np
 
 APPS = ["bludit", "claroline", "expresscart", "joomla", "kanboard", "mantisbt", "mediawiki", "prestashop"]
 VARIANTS = ["full", "title", "steps", "expect"]
-CONDITIONS = [
-    "tfidf", "lsa", "lsa-full",
-    "sbert-all-mpnet-base-v2", "bge-base-en-v1.5", "e5-base-v2",
-    "qwen3-0.6b", "qwen3-0.6b+sts", "qwen3-0.6b@fp32", "qwen3-0.6b+sts@fp32",
-    "gte-qwen2-1.5b-instruct", "gte-qwen2-1.5b-instruct+sts",
-    "stella-en-1.5b-v5", "stella-en-1.5b-v5+sts",
-    "qwen3-4b", "qwen3-4b+sts",
-    "gte-qwen2-7b-instruct", "gte-qwen2-7b-instruct+sts",
-    "qwen3-8b", "qwen3-8b+sts",
-]
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "conditions.json"), encoding="utf-8") as _f:
+    CONDITIONS = [c["name"] for c in json.load(_f) if c["default"]]
 NORM_TOL = 0.01
 
 

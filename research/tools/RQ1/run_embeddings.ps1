@@ -23,58 +23,6 @@ param(
     [switch]$Force
 )
 
-$ModelScript = [ordered]@{
-    "tfidf"                   = "BASELINE:tfidf"
-    "lsa"                     = "BASELINE:lsa"
-    "lsa-full"                = "BASELINE:lsa-full"
-    "sbert-all-mpnet-base-v2" = "tools\RQ1\embedding_models\sbertallmpnetbasev2.py"
-    "bge-base-en-v1.5"        = "tools\RQ1\embedding_models\bgebaseenv1.5.py"
-    "e5-base-v2"              = "tools\RQ1\embedding_models\e5basev2.py"
-    "qwen3-0.6b"                  = "tools\RQ1\embedding_models\qwen3embedding06b.py"
-    "qwen3-0.6b+sts"              = "tools\RQ1\embedding_models\qwen3embedding06b.py"
-    "qwen3-0.6b@fp32"             = "tools\RQ1\embedding_models\qwen3embedding06b.py"
-    "qwen3-0.6b+sts@fp32"         = "tools\RQ1\embedding_models\qwen3embedding06b.py"
-    "gte-qwen2-1.5b-instruct"     = "tools\RQ1\embedding_models\gteqwen21.5binstruct.py"
-    "gte-qwen2-1.5b-instruct+sts" = "tools\RQ1\embedding_models\gteqwen21.5binstruct.py"
-    "stella-en-1.5b-v5"           = "tools\RQ1\embedding_models\stellaen1.5bv5.py"
-    "stella-en-1.5b-v5+sts"       = "tools\RQ1\embedding_models\stellaen1.5bv5.py"
-    "qwen3-4b"                    = "tools\RQ1\embedding_models\qwen3embedding4b.py"
-    "qwen3-4b+sts"                = "tools\RQ1\embedding_models\qwen3embedding4b.py"
-    "qwen3-4b@fp32"               = "tools\RQ1\embedding_models\qwen3embedding4b.py"
-    "qwen3-4b+sts@fp32"           = "tools\RQ1\embedding_models\qwen3embedding4b.py"
-    "gte-qwen2-7b-instruct"       = "tools\RQ1\embedding_models\gteqwen27binstruct.py"
-    "gte-qwen2-7b-instruct+sts"   = "tools\RQ1\embedding_models\gteqwen27binstruct.py"
-    "qwen3-8b"                    = "tools\RQ1\embedding_models\qwen3embedding8b.py"
-    "qwen3-8b+sts"                = "tools\RQ1\embedding_models\qwen3embedding8b.py"
-    "qwen3-8b@fp32"               = "tools\RQ1\embedding_models\qwen3embedding8b.py"
-    "qwen3-8b+sts@fp32"           = "tools\RQ1\embedding_models\qwen3embedding8b.py"
-}
-
-$PromptModels = @("qwen3-0.6b", "gte-qwen2-1.5b-instruct", "stella-en-1.5b-v5", "qwen3-4b",
-                  "gte-qwen2-7b-instruct", "qwen3-8b")
-function Get-ExtraArgs($model) {
-    $base = ($model -replace "@fp32$", "") -replace "\+sts$", ""
-    $extra = ""
-    if ($PromptModels -contains $base) {
-        if ($model -like "*+sts*") { $extra += " --prompt sts" } else { $extra += " --prompt none" }
-    }
-    if ($base -like "qwen3-*") {
-        if ($model -like "*@fp32") { $extra += " --dtype float32" } else { $extra += " --dtype bfloat16" }
-    }
-    return $extra
-}
-
-$DefaultOrder = @(
-    "tfidf", "lsa", "lsa-full",
-    "sbert-all-mpnet-base-v2", "bge-base-en-v1.5", "e5-base-v2",
-    "qwen3-0.6b", "qwen3-0.6b+sts", "qwen3-0.6b@fp32", "qwen3-0.6b+sts@fp32",
-    "gte-qwen2-1.5b-instruct", "gte-qwen2-1.5b-instruct+sts",
-    "stella-en-1.5b-v5", "stella-en-1.5b-v5+sts",
-    "qwen3-4b", "qwen3-4b+sts",
-    "gte-qwen2-7b-instruct", "gte-qwen2-7b-instruct+sts",
-    "qwen3-8b", "qwen3-8b+sts"
-)
-
 $ConflictPattern = "embedding_models|baseline_embed"
 
 $LogHeader = "timestamp,corpus,model,app,variant,device,n,truncated,batch,threads,interop,bound_threads,dtype,affinity,params," +
@@ -130,10 +78,12 @@ function Get-ConflictingProcess {
         Where-Object { $_.CommandLine -match $ConflictPattern }
 }
 
-function Get-ModelId($script) {
-    $m = Select-String -Path $script -Pattern '^MODEL = "(.+)"' | Select-Object -First 1
-    if ($m) { return $m.Matches[0].Groups[1].Value }
-    return $null
+function Get-ArgLine($name, $inFile, $outFile) {
+    $c = $Conditions[$name]
+    if ($c.method -eq "model") {
+        return "tools\RQ1\embedding_models\embed_model.py --condition $name -i `"$inFile`" -o `"$outFile`" --device $Device"
+    }
+    return "tools\RQ1\baseline_embed.py -i `"$inFile`" -o `"$outFile`" -m $($c.method)"
 }
 
 if (-not (Test-Path "tools\RQ1")) {
@@ -141,10 +91,14 @@ if (-not (Test-Path "tools\RQ1")) {
     exit 1
 }
 
+$Conditions = [ordered]@{}
+$rows = Get-Content "tools\RQ1\conditions.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+foreach ($c in $rows) { $Conditions[$c.name] = $c }
+
 $Models   = @($Models   | ForEach-Object { $_ -split "," } | Where-Object { $_ })
 $Variants = @($Variants | ForEach-Object { $_ -split "," } | Where-Object { $_ })
 $Apps     = @($Apps     | ForEach-Object { $_ -split "," } | Where-Object { $_ })
-if ($Models.Count -eq 0) { $Models = $DefaultOrder }
+if ($Models.Count -eq 0) { $Models = @($Conditions.Values | Where-Object { $_.default } | ForEach-Object { $_.name }) }
 
 $cpus = [CpuSets]::Get()
 $logical = $cpus.Count
@@ -174,8 +128,8 @@ Write-Host "計算に使う装置: $Device"
 
 if ($DryRun) {
     foreach ($model in $Models) {
-        if (-not $ModelScript.Contains($model)) { Write-Host "[警告] 未知のモデル名: $model" -ForegroundColor Yellow }
-        else { Write-Host "  $model -> $($ModelScript[$model])$(Get-ExtraArgs $model)" }
+        if (-not $Conditions.Contains($model)) { Write-Host "[警告] 未知のモデル名: $model" -ForegroundColor Yellow }
+        else { Write-Host "  $model -> python $(Get-ArgLine $model '{入力}' '{出力}')" }
     }
     Write-Host "(DryRun のため実行しない)"
     exit 0
@@ -230,8 +184,8 @@ try {
         exit 1
     }
 
-    $modelIds = @($Models | Where-Object { $ModelScript.Contains($_) -and ($ModelScript[$_] -notlike "BASELINE:*") } |
-                  ForEach-Object { Get-ModelId $ModelScript[$_] } | Where-Object { $_ } | Sort-Object -Unique)
+    $modelIds = @($Models | Where-Object { $Conditions.Contains($_) -and ($Conditions[$_].method -eq "model") } |
+                  ForEach-Object { $Conditions[$_].model } | Sort-Object -Unique)
     $envName = "embed_env_{0}.json" -f (Get-Date -Format "yyyyMMdd_HHmmss")
     $pyInfo = (& python tools\RQ1\embed_env.py --models @modelIds 2>$null) -join "`n"
     if ($LASTEXITCODE -ne 0) {
@@ -270,12 +224,12 @@ try {
     $tWarm = ""; $cWarm = ""; $warmBytes = ""
 
     foreach ($model in $Models) {
-        if (-not $ModelScript.Contains($model)) {
+        if (-not $Conditions.Contains($model)) {
             Write-Host "[警告] 未知のモデル名: $model" -ForegroundColor Yellow
             continue
         }
-        $script = $ModelScript[$model]
-        $isBaseline = $script -like "BASELINE:*"
+        $cond = $Conditions[$model]
+        $isBaseline = $cond.method -ne "model"
 
         foreach ($app in $Apps) {
             foreach ($variant in $Variants) {
@@ -293,11 +247,11 @@ try {
                     exit 1
                 }
 
-                if ((-not $isBaseline) -and (-not $warmed.ContainsKey($script))) {
+                if ((-not $isBaseline) -and (-not $warmed.ContainsKey($cond.model))) {
                     Write-Host "[$model] モデルのファイルを先読み中..." -NoNewline
                     $warmErr = [System.IO.Path]::GetTempFileName()
                     $swWarm = [System.Diagnostics.Stopwatch]::StartNew()
-                    & python tools\RQ1\embed_env.py --warm --models (Get-ModelId $script) 2>$warmErr
+                    & python tools\RQ1\embed_env.py --warm --models $cond.model 2>$warmErr
                     $swWarm.Stop()
                     $wl = @(Get-Content $warmErr -ErrorAction SilentlyContinue) -join " "
                     Remove-Item $warmErr -ErrorAction SilentlyContinue
@@ -308,19 +262,14 @@ try {
                     if ($wl -match "warm_bytes=(\d+)")   { $warmBytes = $Matches[1] }
                     $mb = if ($warmBytes -ne "") { "$([math]::Round([double]$warmBytes / 1MB)) MB" } else { "?" }
                     Write-Host " 完了 ($tWarm 秒 / $mb)"
-                    $warmed[$script] = $true
+                    $warmed[$cond.model] = $true
                 }
 
                 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
                 if (Test-Path $outFile) { Remove-Item $outFile }
                 Write-Host "[$model] $app / $variant ..." -NoNewline
 
-                if ($isBaseline) {
-                    $method = $script -replace "BASELINE:", ""
-                    $argLine = "tools\RQ1\baseline_embed.py -i `"$inFile`" -o `"$outFile`" -m $method"
-                } else {
-                    $argLine = "`"$script`" -i `"$inFile`" -o `"$outFile`" --device $Device$(Get-ExtraArgs $model)"
-                }
+                $argLine = Get-ArgLine $model $inFile $outFile
                 $stdoutFile = [System.IO.Path]::GetTempFileName()
                 $stderrFile = [System.IO.Path]::GetTempFileName()
 
