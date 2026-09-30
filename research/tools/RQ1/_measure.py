@@ -29,30 +29,25 @@ class _MemCounters(ctypes.Structure):
                 ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
 
 
-def peak_rss_mb():
-    if sys.platform == "win32":
-        cur = ctypes.windll.kernel32.GetCurrentProcess
-        cur.restype = ctypes.c_void_p
-        cur.argtypes = []
-        c = _MemCounters()
-        c.cb = ctypes.sizeof(_MemCounters)
-        for dll, name in ((ctypes.windll.psapi, "GetProcessMemoryInfo"),
-                          (ctypes.windll.kernel32, "K32GetProcessMemoryInfo")):
-            try:
-                fn = getattr(dll, name)
-            except AttributeError:
-                continue
-            fn.restype = ctypes.c_int
-            fn.argtypes = [ctypes.c_void_p, ctypes.POINTER(_MemCounters), ctypes.c_uint32]
-            if fn(cur(), ctypes.byref(c), c.cb):
-                return round(c.PeakWorkingSetSize / (1 << 20))
+def peak_commit_mb():
+    if sys.platform != "win32":
         return -1
-    try:
-        import resource
-    except ImportError:
-        return -1
-    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    return round(peak / 1024) if sys.platform.startswith("linux") else round(peak / (1 << 20))
+    cur = ctypes.windll.kernel32.GetCurrentProcess
+    cur.restype = ctypes.c_void_p
+    cur.argtypes = []
+    c = _MemCounters()
+    c.cb = ctypes.sizeof(_MemCounters)
+    for dll, name in ((ctypes.windll.psapi, "GetProcessMemoryInfo"),
+                      (ctypes.windll.kernel32, "K32GetProcessMemoryInfo")):
+        try:
+            fn = getattr(dll, name)
+        except AttributeError:
+            continue
+        fn.restype = ctypes.c_int
+        fn.argtypes = [ctypes.c_void_p, ctypes.POINTER(_MemCounters), ctypes.c_uint32]
+        if fn(cur(), ctypes.byref(c), c.cb):
+            return round(c.PeakPagefileUsage / (1 << 20))
+    return -1
 
 
 def peak_gpu_mb(device):

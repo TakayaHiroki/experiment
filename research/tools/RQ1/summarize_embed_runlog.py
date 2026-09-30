@@ -7,14 +7,9 @@ import argparse, csv, json, os
 from collections import Counter
 
 LEXICAL = ["tfidf", "lsa", "lsa-full"]
-MIN_FREE_MB = 1024
-MAX_BUSY_PCT = 10
-# 8コアを使い切れていれば8付近．8の-25%を境にする
-ENCODE_RATIO_MIN = 6.0
 
 
 def num(r, k):
-    # 列が無い古いログでも落ちないようにする
     return float(r[k]) if r.get(k) else 0.0
 
 
@@ -24,9 +19,18 @@ def main():
     a = ap.parse_args()
 
     with open(a.log, encoding="utf-8-sig") as f:
-        rows = list(csv.DictReader(f))
+        log = list(csv.DictReader(f))
+    latest = {}
+    for r in log:
+        latest[(r["model"], r["app"], r["variant"])] = r
+    failed = [r for r in latest.values() if r["status"] == "failed"]
+    rows = [r for r in log if latest[(r["model"], r["app"], r["variant"])] is r and r["status"] != "failed"]
     conds = list(dict.fromkeys(r["model"] for r in rows))
     by = {c: [r for r in rows if r["model"] == c] for c in conds}
+    envs = {}
+    for name in sorted({r["env_file"] for r in rows}):
+        with open(os.path.join(os.path.dirname(a.log), name), encoding="utf-8-sig") as f:
+            envs[name] = json.load(f)
 
     def total(c, k):
         return sum(num(r, k) for r in by[c])
@@ -34,70 +38,63 @@ def main():
     def values(c, k):
         return "/".join(sorted({r[k] for r in by[c]})) or "-"
 
-    print(f"行数 {len(rows)} / 条件・アプリ・バリアントの組 {len({(r['model'], r['app'], r['variant']) for r in rows})}"
+    print(f"行数 {len(log)} / 条件・アプリ・バリアントの組 {len(latest)} / 集計に使う行 {len(rows)}"
+          f"（組ごとに最後の行．再実行で置き換わった {len(log) - len(latest)} 行と，最後が failed の {len(failed)} 組を除く）"
           f" / 条件 {len(conds)}")
+    for r in failed:
+        print(f"  最後が failed: {r['model']} {r['app']}/{r['variant']}"
+              f"（経過 {num(r, 'total_s'):.0f} 秒，外から見た確保量のピーク {r['peak_commit_ext_mb'] or '-'} MB）")
 
     print("\n1. 所要時間と資源の使用量")
-    print("   経過・CPU・構築 = total_s・cpu_total_s・t_load_s の合計（分），"
-          "ピーク = peak_rss_mb の最大，空き = mem_free_min_mb の最小")
+    print("   経過 = total_s の合計（分），CPU = c_load_s + c_encode_s の合計（分），構築 = t_load_s の合計（分），"
+          "本番 = t_encode_s の合計（秒），ピーク = peak_commit_mb の最大（MB）")
     print(f"{'条件':<28}{'行':>3}{'dtype':>9}{'batch':>6}{'params(B)':>10}"
-          f"{'経過':>8}{'CPU':>8}{'構築':>7}{'ピーク':>7}{'空き':>6}")
+          f"{'経過':>8}{'CPU':>8}{'構築':>7}{'本番':>11}{'ピーク':>8}")
     for c in conds:
         params = "---" if c in LEXICAL else f"{num(by[c][0], 'params') / 1e9:.2f}"
         print(f"{c:<28}{len(by[c]):>3}{values(c, 'dtype'):>9}{values(c, 'batch'):>6}{params:>10}"
-              f"{total(c, 'total_s') / 60:>8.1f}{total(c, 'cpu_total_s') / 60:>8.1f}{total(c, 't_load_s') / 60:>7.1f}"
-              f"{max(num(r, 'peak_rss_mb') for r in by[c]):>7.0f}{min(num(r, 'mem_free_min_mb') for r in by[c]):>6.0f}")
+              f"{total(c, 'total_s') / 60:>8.1f}{(total(c, 'c_load_s') + total(c, 'c_encode_s')) / 60:>8.1f}"
+              f"{total(c, 't_load_s') / 60:>7.1f}{total(c, 't_encode_s'):>11.3f}{max(num(r, 'peak_commit_mb') for r in by[c]):>8.0f}")
 
-    print("\n2. CPU時間と経過時間の比（語彙的手法を除く．全体の降順）")
-    print("   全体 = Σcpu_total_s / Σtotal_s，本番 = Σc_encode_s / Σt_encode_s，構築の割合 = Σt_load_s / Σtotal_s")
-    print(f"   本番が {ENCODE_RATIO_MIN} を下回る条件に [x] を付ける（8コアを使い切れていない）")
-    ratio = {c: (total(c, "cpu_total_s") / total(c, "total_s"), total(c, "c_encode_s") / total(c, "t_encode_s"),
-                 total(c, "t_load_s") / total(c, "total_s")) for c in conds if c not in LEXICAL}
-    for c in sorted(ratio, key=lambda c: -ratio[c][0]):
-        mark = "[x]" if ratio[c][1] < ENCODE_RATIO_MIN else "   "
-        print(f"{mark} {c:<28} 全体 {ratio[c][0]:.2f}  本番 {ratio[c][1]:.2f}  構築の割合 {ratio[c][2]:.0%}")
-    slow = sorted((c for c in ratio if ratio[c][1] < ENCODE_RATIO_MIN), key=lambda c: ratio[c][1])
-    print(f"   時間を使わない条件（本番 < {ENCODE_RATIO_MIN}）: "
-          + (" ".join(f"{c}({ratio[c][1]:.2f})" for c in slow) if slow else "なし"))
-    if slow:
-        print("   → 所要時間は報告に使わず，メモリのピークとパラメータ数で報告する")
+    print("\n2. 時間の採否")
+    print("   時間を使うのは，ok_unbound の行が無い条件だけ．本番の比と5の負荷は記述の値で，採否には使わない")
+    print("   本番の比 = Σc_encode_s / Σt_encode_s（語彙的手法は -），構築の割合 = Σt_load_s / Σtotal_s")
+    print("   [u] ok_unbound の行がある")
+    marks = {}
+    for c in conds:
+        unbound = sum(r["status"] == "ok_unbound" for r in by[c])
+        marks[c] = "[u]" if unbound else ""
+        ratio = "-" if c in LEXICAL else f"{total(c, 'c_encode_s') / total(c, 't_encode_s'):.2f}"
+        print(f"{marks[c]:<4} {c:<28} 本番の比 {ratio:>4}  unbound {unbound}/{len(by[c])}"
+              f"  構築の割合 {total(c, 't_load_s') / total(c, 'total_s'):.0%}")
+    unused = [c for c in conds if marks[c]]
+    print("   時間を使わない条件: " + (" ".join(f"{c}{marks[c]}" for c in unused) if unused else "なし"))
+    if unused:
+        print("   → その行の出力ファイルを消し，ほかのアプリを閉じて再実行する．再実行しても残る条件は時間を使わない")
 
-    print("\n3. モデルファイルの先読み（1GiB = 2^30 バイト）")
-    for r in rows:
+    print("\n3. モデルファイルの先読み（1GiB = 2^30 バイト．置き換わった行も含め，先読みした回ごと）")
+    for r in log:
         if r["t_warm_s"]:
             gib = num(r, "warm_bytes") / 2**30
             print(f"{r['model']:<28} {gib:5.1f} GiB  {num(r, 't_warm_s'):6.2f} 秒  {gib / num(r, 't_warm_s'):.2f} GiB/秒")
 
-    print("\n4. status の件数")
-    for k, n in Counter(r["status"] for r in rows).most_common():
+    print("\n4. status の件数（組ごとの最後の行）")
+    for k, n in Counter(r["status"] for r in latest.values()).most_common():
         print(f"  {k:<11}{n:>4}")
 
-    print(f"\n5. 空きメモリ（mem_free_min_mb）が {MIN_FREE_MB}MB を下回った実行")
-    low = [r for r in rows if num(r, "mem_free_min_mb") < MIN_FREE_MB]
-    print(f"  合計 {len(low)} 件 / status の内訳 {dict(Counter(r['status'] for r in low))}")
+    print("\n5. 計測中の負荷（記述の値．マシン全体の論理プロセッサに対する割合．条件ごとの最大）")
+    print("   他プロセス = other_cpu_during_pct，OS のメモリ管理 = os_mem_cpu_pct")
     for c in conds:
-        lc = [r for r in low if r["model"] == c]
-        if lc:
-            print(f"  {c:<28}{len(lc):>3}/{len(by[c])}  最小 {min(num(r, 'mem_free_min_mb') for r in lc):.0f}MB"
-                  f"  status の内訳 {dict(Counter(r['status'] for r in lc))}")
+        print(f"  {c:<28}他プロセス {max(num(r, 'other_cpu_during_pct') for r in by[c]):5.1f}%"
+              f"  OS のメモリ管理 {max(num(r, 'os_mem_cpu_pct') for r in by[c]):5.1f}%")
 
-    print(f"\n6. 他プロセスの負荷（{MAX_BUSY_PCT}% 超）")
-    before = [r for r in rows if num(r, "cpu_busy_before_pct") > MAX_BUSY_PCT]
-    during = [r for r in rows if num(r, "other_cpu_during_pct") > MAX_BUSY_PCT]
-    print(f"  実行前（cpu_busy_before_pct） {len(before)} 件 / 実行中（other_cpu_during_pct） {len(during)} 件")
-    for c in conds:
-        dc = [r for r in during if r["model"] == c]
-        if dc:
-            print(f"  {c:<28}{len(dc):>3}/{len(by[c])}  最大 {max(num(r, 'other_cpu_during_pct') for r in dc):.1f}%")
-
-    print("\n7. 計測環境")
-    for name in sorted({r["env_file"] for r in rows}):
-        with open(os.path.join(os.path.dirname(a.log), name), encoding="utf-8-sig") as f:
-            env = json.load(f)
+    print("\n6. 計測環境")
+    for name, env in envs.items():
         print(f"  {name}: ram_total_mb={env['ram_total_mb']} logical_procs={env['logical_procs']} "
-              f"threads={env['threads']} affinity_mask={env['affinity_mask']}")
+              f"threads={env['threads']} affinity_mask={env['affinity_mask']} "
+              f"KMP_BLOCKTIME={env['python']['env']['KMP_BLOCKTIME']}")
 
-    print("\n8. 入力の切り捨て（truncated）")
+    print("\n7. 入力の切り捨て（truncated）")
     cut = [r for r in rows if num(r, "truncated") > 0]
     if not cut:
         print("  切り捨ては無い")

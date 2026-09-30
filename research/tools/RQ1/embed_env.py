@@ -23,11 +23,11 @@ _buf = memoryview(bytearray(64 << 20))
 t0, c0 = time.perf_counter(), time.process_time()
 for m in a.models:
     path = snapshot_download(m, local_files_only=True)
-    files = sorted(os.listdir(path))
     size = 0
-    for fn in files:
-        p = os.path.join(path, fn)
-        if os.path.isfile(p):
+    for d, dirs, fns in os.walk(path):
+        dirs.sort()
+        for fn in sorted(fns):
+            p = os.path.join(d, fn)
             size += os.path.getsize(p)
             if a.warm:
                 with open(p, "rb") as f:

@@ -91,5 +91,5 @@ print(_measure.timing(
     dtype=str(dtype).replace("torch.", ""),
     prompt=a.prompt,
     device=DEVICE, params=n_params,
-    peak_rss_mb=_measure.peak_rss_mb(), peak_gpu_mb=_measure.peak_gpu_mb(DEVICE)))
+    peak_commit_mb=_measure.peak_commit_mb(), peak_gpu_mb=_measure.peak_gpu_mb(DEVICE)))
 print(f"Embeddings saved to {a.output} ({len(out)} entries, dim={emb.shape[1]})")

@@ -18,9 +18,6 @@ param(
     [int]$Threads = 0,
     [ValidateSet("cpu", "cuda")][string]$Device = "cpu",
     [switch]$AllCores,
-    [double]$MaxBusyPercent = 10,
-    [int]$IdleWaitSec = 300,
-    [int]$MinFreeMemMB = 1024,
     [switch]$IncludeAll,
     [switch]$DryRun,
     [switch]$Force
@@ -82,8 +79,8 @@ $ConflictPattern = "embedding_models|baseline_embed"
 
 $LogHeader = "timestamp,corpus,model,app,variant,device,n,truncated,batch,threads,interop,bound_threads,dtype,affinity,params," +
              "t_warm_s,warm_bytes,t_load_s,t_first_s,t_encode_s,total_s," +
-             "c_warm_s,c_load_s,c_first_s,c_encode_s,cpu_total_s," +
-             "cpu_busy_before_pct,other_cpu_during_pct,peak_ws_mb,peak_rss_mb,peak_gpu_mb,mem_free_min_mb," +
+             "c_warm_s,c_load_s,c_first_s,c_encode_s," +
+             "other_cpu_during_pct,os_mem_cpu_pct,peak_commit_mb,peak_commit_ext_mb,peak_gpu_mb," +
              "env_file,status"
 
 Add-Type -TypeDefinition @'
@@ -123,20 +120,14 @@ function Get-BusyFraction($a, $b) {
     return [math]::Max(0.0, 1.0 - ([double]($b.PercentProcessorTime - $a.PercentProcessorTime) / $dt))
 }
 
-function Get-BusyPercent {
-    $a = Get-CpuRaw
-    Start-Sleep -Seconds 2
-    $b = Get-CpuRaw
-    return [math]::Round(100 * (Get-BusyFraction $a $b), 1)
+function Get-OsMemCpuSec {
+    $procs = Get-CimInstance Win32_PerfRawData_PerfProc_Process -Filter "IDProcess = 4 OR Name = 'Memory Compression'"
+    return [double]($procs | Measure-Object -Property PercentProcessorTime -Sum).Sum / 1e7
 }
 
 function Get-ConflictingProcess {
     Get-CimInstance Win32_Process -Filter "Name LIKE 'python%'" |
         Where-Object { $_.CommandLine -match $ConflictPattern }
-}
-
-function Get-FreeMemMB {
-    [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1024)
 }
 
 function Get-ModelId($script) {
@@ -225,6 +216,7 @@ try {
     $env:OMP_NUM_THREADS = "$Threads"
     $env:MKL_NUM_THREADS = "$Threads"
     $env:KMP_AFFINITY = if ($AllCores) { "verbose,none" } else { "verbose,granularity=fine,compact,1,0" }
+    $env:KMP_BLOCKTIME = "0"
     $env:HF_HUB_OFFLINE = "1"
 
     $logDir = Split-Path $LogFile
@@ -260,13 +252,12 @@ try {
         threads        = $Threads
         priority       = "AboveNormal"
         ram_total_mb   = [math]::Round($cs.TotalPhysicalMemory / 1MB)
-        ram_free_mb    = Get-FreeMemMB
+        ram_free_mb    = [math]::Round($os.FreePhysicalMemory / 1024)
         os             = "$($os.Caption) $($os.Version) build $($os.BuildNumber)"
         power_scheme   = ((& powercfg /getactivescheme) -join " ").Trim()
         git_head       = $gitHead
         git_tools_dirty = $gitDirty
         args           = [ordered]@{ Models = $Models; Variants = $Variants; Apps = $Apps; Device = $Device;
-                                     MaxBusyPercent = $MaxBusyPercent; MinFreeMemMB = $MinFreeMemMB;
                                      AllCores = [bool]$AllCores }
         python         = ($pyInfo | ConvertFrom-Json)
     }
@@ -275,7 +266,7 @@ try {
     Write-Host "電源プラン: $($envInfo.power_scheme)"
     $warmed = @{}
 
-    $total = 0; $skipped = 0; $failed = 0; $noisy = 0
+    $total = 0; $skipped = 0; $failed = 0; $unbound = 0
     $tWarm = ""; $cWarm = ""; $warmBytes = ""
 
     foreach ($model in $Models) {
@@ -300,15 +291,6 @@ try {
                     Write-Host "ベクトル化の Python プロセスが別に起動されたため中止" -ForegroundColor Red
                     $conf | ForEach-Object { Write-Host "    PID $($_.ProcessId): $($_.CommandLine)" }
                     exit 1
-                }
-
-                $busy = Get-BusyPercent
-                $waited = 0
-                while (($busy -gt $MaxBusyPercent) -and ($waited -lt $IdleWaitSec)) {
-                    Write-Host "  CPU使用率 $busy% のため待機中..." -ForegroundColor Yellow
-                    Start-Sleep -Seconds 10
-                    $waited += 12
-                    $busy = Get-BusyPercent
                 }
 
                 if ((-not $isBaseline) -and (-not $warmed.ContainsKey($script))) {
@@ -342,6 +324,7 @@ try {
                 $stdoutFile = [System.IO.Path]::GetTempFileName()
                 $stderrFile = [System.IO.Path]::GetTempFileName()
 
+                $osMem0 = Get-OsMemCpuSec
                 $selfCpu0 = $self.TotalProcessorTime.TotalSeconds
                 $raw0 = Get-CpuRaw
                 if (-not $AllCores) { $self.ProcessorAffinity = [IntPtr]$workMask }
@@ -353,24 +336,23 @@ try {
                 try { $p.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::AboveNormal } catch {}
 
                 $peak = [int64]0
-                $memMin = [int64]::MaxValue
                 while (-not $p.HasExited) {
-                    try { $p.Refresh(); if ($p.PeakWorkingSet64 -gt $peak) { $peak = $p.PeakWorkingSet64 } } catch {}
-                    $free = Get-FreeMemMB
-                    if ($free -lt $memMin) { $memMin = $free }
+                    try { $p.Refresh(); if ($p.PeakPagedMemorySize64 -gt $peak) { $peak = $p.PeakPagedMemorySize64 } } catch {}
                     Start-Sleep -Milliseconds 1000
                 }
                 $p.WaitForExit()
                 $sw.Stop()
                 $raw1 = Get-CpuRaw
+                $osMem1 = Get-OsMemCpuSec
                 $sec = [math]::Round($sw.Elapsed.TotalSeconds, 2)
 
                 $allCpuSec = (Get-BusyFraction $raw0 $raw1) * $sw.Elapsed.TotalSeconds * $logical
                 $childCpuSec = $p.TotalProcessorTime.TotalSeconds
                 $selfCpuSec = $self.TotalProcessorTime.TotalSeconds - $selfCpu0
-                $otherPct = [math]::Round(100 * [math]::Max(0, $allCpuSec - $childCpuSec - $selfCpuSec) /
+                $osMemSec = [math]::Max(0, $osMem1 - $osMem0)
+                $otherPct = [math]::Round(100 * [math]::Max(0, $allCpuSec - $childCpuSec - $selfCpuSec - $osMemSec) /
                                           ($sw.Elapsed.TotalSeconds * $logical), 1)
-                if ($memMin -eq [int64]::MaxValue) { $memMin = Get-FreeMemMB }
+                $osMemPct = [math]::Round(100 * $osMemSec / ($sw.Elapsed.TotalSeconds * $logical), 1)
                 $peakMB = [math]::Round($peak / 1MB)
 
                 $out = @(Get-Content $stdoutFile -ErrorAction SilentlyContinue)
@@ -382,7 +364,7 @@ try {
                 $err = @($err | Where-Object { $_ -notmatch "^OMP: Info" })
 
                 $tLoad = ""; $tEnc = ""; $n = ""; $trunc = ""; $batch = ""; $thr = ""; $interop = ""; $dtype = ""
-                $cLoad = ""; $cEnc = ""; $dev = ""; $prm = ""; $rssMB = ""; $gpuMB = ""
+                $cLoad = ""; $cEnc = ""; $dev = ""; $prm = ""; $commitMB = ""; $gpuMB = ""
                 $tFirst = ""; $cFirst = ""
                 $timing = $out | Select-String -Pattern "\[TIMING\]" | Select-Object -First 1
                 if ($timing) {
@@ -400,14 +382,14 @@ try {
                     if ($timing -match "c_first=([\d.]+)")  { $cFirst  = $Matches[1] }
                     if ($timing -match "device=(\w+)")      { $dev     = $Matches[1] }
                     if ($timing -match "params=(\d+)")      { $prm     = $Matches[1] }
-                    if ($timing -match "peak_rss_mb=(-?\d+)") { $rssMB = $Matches[1] }
+                    if ($timing -match "peak_commit_mb=(-?\d+)") { $commitMB = $Matches[1] }
                     if ($timing -match "peak_gpu_mb=(-?\d+)") { $gpuMB = $Matches[1] }
                 }
 
                 $uniq = @($boundProcs | Sort-Object -Unique)
                 $bindingOk = $true
                 if ((-not $isBaseline) -and (-not $AllCores) -and ($Device -eq "cpu")) {
-                    $outside = @($boundProcs | Where-Object { $workIds -notcontains [int]$_ })
+                    $outside = @($boundProcs | Where-Object { ($_ -notmatch '^\d+$') -or ($workIds -notcontains [int]$_) })
                     $bindingOk = ($thr -eq "$Threads") -and ($bound.Count -ge $Threads) -and
                                  ($uniq.Count -eq $Threads) -and ($outside.Count -eq 0)
                 }
@@ -415,14 +397,8 @@ try {
                 if (($p.ExitCode -eq 0) -and (Test-Path $outFile)) {
                     $status = "ok"; $total++
                     if (-not $bindingOk) {
-                        $status = "ok_unbound"; $noisy++
+                        $status = "ok_unbound"; $unbound++
                         Write-Host " 完了 ($sec 秒) スレッドの固定を確認できない（threads=$thr, 固定先 $($uniq.Count) 個・報告 $($bound.Count) 行: $($uniq -join ' ')）" -ForegroundColor Yellow
-                    } elseif (($busy -gt $MaxBusyPercent) -or ($otherPct -gt $MaxBusyPercent)) {
-                        $status = "ok_noisy"; $noisy++
-                        Write-Host " 完了 ($sec 秒) 他プロセスの負荷あり: 実行前 $busy% / 実行中 $otherPct%" -ForegroundColor Yellow
-                    } elseif ($memMin -lt $MinFreeMemMB) {
-                        $status = "ok_lowmem"; $noisy++
-                        Write-Host " 完了 ($sec 秒) 空きメモリ不足（最小 $memMin MB）．ページングの疑い" -ForegroundColor Yellow
                     } else {
                         Write-Host " 完了 ($sec 秒)" -ForegroundColor Green
                     }
@@ -433,11 +409,10 @@ try {
                 }
 
                 $stamp = Get-Date -Format "yyyy-MM-ddTHH:mm:ss"
-                $childCpu = [math]::Round($childCpuSec, 2)
                 "$stamp,$Corpus,$model,$app,$variant,$dev,$n,$trunc,$batch,$thr,$interop,$($uniq.Count),$dtype,$affinityLabel,$prm," +
                 "$tWarm,$warmBytes,$tLoad,$tFirst,$tEnc,$sec," +
-                "$cWarm,$cLoad,$cFirst,$cEnc,$childCpu," +
-                "$busy,$otherPct,$peakMB,$rssMB,$gpuMB,$memMin,$envName,$status" |
+                "$cWarm,$cLoad,$cFirst,$cEnc," +
+                "$otherPct,$osMemPct,$commitMB,$peakMB,$gpuMB,$envName,$status" |
                     Out-File -FilePath $LogFile -Append -Encoding utf8
                 $tWarm = ""; $cWarm = ""; $warmBytes = ""
             }
@@ -446,12 +421,10 @@ try {
 
     Write-Host ""
     Write-Host "===================================================="
-    Write-Host " 実行 $total 件（うち計測条件の乱れ $noisy 件） / 既存のため省略 $skipped 件 / 失敗 $failed 件"
+    Write-Host " 実行 $total 件（うちスレッドの固定を確認できない $unbound 件） / 既存のため省略 $skipped 件 / 失敗 $failed 件"
     Write-Host " ログ: $LogFile"
-    if ($noisy -gt 0) {
-        Write-Host " status は疑いの印．時間の採否そのものではない" -ForegroundColor Yellow
-        Write-Host " ok_unbound / ok_noisy はほかのアプリを閉じ，出力ファイルを消して再実行" -ForegroundColor Yellow
-        Write-Host " ok_lowmem は c_encode_s / t_encode_s が $Threads に近いかで採否を決める（summarize_embed_runlog.py の 2.）" -ForegroundColor Yellow
+    if ($unbound -gt 0) {
+        Write-Host " ok_unbound はほかのアプリを閉じ，出力ファイルを消して再実行" -ForegroundColor Yellow
     }
     Write-Host "===================================================="
     if ($failed -gt 0) { exit 1 }

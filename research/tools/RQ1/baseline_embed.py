@@ -67,11 +67,17 @@ def main():
     titles, texts = load(a.input)
     print(f"Loaded {len(texts)} test cases. Encoding with {a.method}...")
 
+    def encode():
+        if a.method == "tfidf":
+            return emb_tfidf(texts, a.min_df)
+        return emb_lsa(texts, a.dim if a.method == "lsa" else None)
+
+    cf, tf = time.process_time(), time.perf_counter()
+    encode()
+    t_first, c_first = time.perf_counter() - tf, time.process_time() - cf
+
     c1, t1 = time.process_time(), time.perf_counter()
-    if a.method == "tfidf":
-        E = emb_tfidf(texts, a.min_df)
-    else:
-        E = emb_lsa(texts, a.dim if a.method == "lsa" else None)
+    E = encode()
     t_encode, c_encode = time.perf_counter() - t1, time.process_time() - c1
 
     results = [{"index": i, "title": titles[i], "embedding": E[i].tolist()}
@@ -83,10 +89,10 @@ def main():
     os.replace(tmp, a.output)
 
     print(_measure.timing(
-        t_load="0.00", t_encode=f"{t_encode:.2f}",
-        c_load="0.00", c_encode=f"{c_encode:.2f}",
+        t_load="0.00", t_first=f"{t_first:.6f}", t_encode=f"{t_encode:.6f}",
+        c_load="0.00", c_first=f"{c_first:.6f}", c_encode=f"{c_encode:.6f}",
         n=len(texts), device="cpu", params=0,
-        peak_rss_mb=_measure.peak_rss_mb(), peak_gpu_mb=0))
+        peak_commit_mb=_measure.peak_commit_mb(), peak_gpu_mb=0))
     print(f"\nEmbeddings saved to {a.output} ({len(results)} entries, dim={E.shape[1]})")
 
 
