@@ -100,6 +100,7 @@ def run(metric, prepare, compare=None, permute=None, contrib=contrib_micro,
     ap.add_argument("--out", "-o", default=None,
                     help=f"出力 CSV（既定 results/metrics/{metric}/{{corpus_name}}_{{variant}}.csv）")
     a = ap.parse_args()
+    a.exclude = list(dict.fromkeys(a.exclude))
     if a.perms < 1:
         raise SystemExit("--perms は1以上にすること")
     if len(set(a.apps)) != len(a.apps):
@@ -186,7 +187,7 @@ def run(metric, prepare, compare=None, permute=None, contrib=contrib_micro,
             row = dict(
                 corpus=a.corpus_name, variant=a.variant, metric=metric, k=k,
                 model_a=x, model_b=y, n=sum(ns[app] for app in common), n_apps=len(common),
-                apps=" ".join(common), excluded=" ".join(sorted(set(a.exclude))),
+                apps=" ".join(common), excluded=" ".join(sorted(a.exclude)),
                 value=round(value, 6), value_lo=round(lo, 6), value_hi=round(hi, 6),
                 chance_mean=round(float(np.nanmean(series)), 6), chance_sd=round(float(np.nanstd(series)), 6),
                 perms=a.perms)

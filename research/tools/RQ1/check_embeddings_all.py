@@ -25,6 +25,7 @@ def main():
     ap.add_argument("--exclude", nargs="*", default=[],
                     help="作れなかった条件（実行記録で status=failed）．指標の --exclude と同じ名前を渡す")
     a = ap.parse_args()
+    a.exclude = list(dict.fromkeys(a.exclude))
     for cond in a.exclude:
         if cond not in CONDITIONS:
             raise SystemExit(f"{cond} は conditions.json の既定の条件に無い")

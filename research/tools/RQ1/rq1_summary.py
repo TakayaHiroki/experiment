@@ -186,11 +186,12 @@ def main():
     W(f"\n## 1. 系統ごとの一致（前置きなし・配布された精度の{len(base)}表現）\n")
     W("| 組み合わせ | ペア数 | " + " | ".join(c[1] for c in cols) + " |")
     W("|---|---:|" + "---:|" * len(cols))
+    base_pairs = list(itertools.combinations(base, 2))
     for key in order:
         ps = buckets[key]
         W(f"| {key} | {len(ps)} | " + " | ".join(f"{np.mean([cell(M[m][(*p, k)]) for p in ps]):.3f}" for m, _, k in cols) + " |")
     W("| （偶然一致の水準） | | " + " | ".join(
-        f"{np.mean([cell(M[m][(*p, k)], 'chance_mean') for p in pairs_all]):.3f}" for m, _, k in cols) + " |")
+        f"{np.mean([cell(M[m][(*p, k)], 'chance_mean') for p in base_pairs]):.3f}" for m, _, k in cols) + " |")
     ll_pairs = buckets.get("語彙 × 語彙", [])
     if ll_pairs:
         W(f"\n`語彙 × 語彙` は {' / '.join(f'{x} ↔ {y}' for x, y in ll_pairs)} の{len(ll_pairs)}組だけで，"
@@ -235,7 +236,7 @@ def main():
     for key in order:
         W(f"| {key} | " + " | ".join(f"{np.mean([cell(M['fpf_top'][(*p, str(k))]) for p in buckets[key]]):.3f}" for k in ks) + " |")
     W("| （偶然一致の水準） | " + " | ".join(
-        f"{np.mean([cell(M['fpf_top'][(*p, str(k))], 'chance_mean') for p in pairs_all]):.3f}" for k in ks) + " |")
+        f"{np.mean([cell(M['fpf_top'][(*p, str(k))], 'chance_mean') for p in base_pairs]):.3f}" for k in ks) + " |")
 
     # 4. 条件の違い
     W("\n## 4. 条件の違い\n")
@@ -290,15 +291,16 @@ def main():
                 ties[v] = max(ties[v], sum(int((T[(app, v)].sum(1) > 1).sum()) for app in apps))
             cells = []
             for x, y in VPAIRS:
-                exp = lo = hi = 0.0
+                exp = lo = hi = tot = 0.0
                 for app in apps:
                     tx, ty = T[(app, x)], T[(app, y)]
                     both = (tx & ty).sum(1)
                     exp += float((both / (tx.sum(1) * ty.sum(1))).sum())
                     hi += int((both > 0).sum())
                     lo += int(((tx.sum(1) == 1) & (ty.sum(1) == 1) & (both == 1)).sum())
-                worst = min(worst, exp / n_tests)
-                cells.append(f"{exp / n_tests:.3f}（{lo / n_tests:.3f}〜{hi / n_tests:.3f}）")
+                    tot += len(tx)
+                worst = min(worst, exp / tot)
+                cells.append(f"{exp / tot:.3f}（{lo / tot:.3f}〜{hi / tot:.3f}）")
             W(f"| {m} | " + " | ".join(cells) + " |")
         W(f"\n最も低いところで **{worst:.3f}**．"
           "同点のあるテストの数（表現の中で最大）: " + " / ".join(f"{v} {ties[v]}" for v in V) + "．\n")
