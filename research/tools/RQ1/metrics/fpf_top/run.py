@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""FPF 上位k件の重なり（fpf_top）．k は 1 から順に全部出す
+"""FPF 上位k件の重なり（fpf_top）．k は 1 から K_MAX まで出す
 
 usage:
   python tools/RQ1/metrics/fpf_top/run.py -e embeddings/bewt -c corpus/bewt/json \
@@ -11,7 +11,9 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _harness import run, similarity
 
-SHOW_KS = (5, 10, 20)
+# k がテスト数に近いと表現と関係なく重なるので，最小のアプリ（23件）の半分より手前で止める
+K_MAX = 10
+SHOW_KS = (5, 10)
 
 
 def prepare(X):
@@ -53,7 +55,7 @@ def contrib(hits, n, k):
 
 
 def key_list(ns):
-    return tuple(range(1, min(ns.values()) + 1))
+    return tuple(range(1, min(K_MAX, *ns.values()) + 1))
 
 
 def show_keys(keys):

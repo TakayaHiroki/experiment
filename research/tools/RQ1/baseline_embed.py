@@ -36,14 +36,11 @@ def emb_tfidf(texts, min_df):
 
 def emb_lsa(texts, dim, warn):
     X = TfidfVectorizer(stop_words="english", sublinear_tf=True).fit_transform(texts).toarray()
-    full = dim is None
-    cap = min(X.shape)
-    req = cap if full else dim
-    dim = min(req, cap)
+    req, dim = dim, min(dim, min(X.shape))
     if warn and dim < req:
         print(f"[WARN] lsa: 指定 {req} 次元は不可能．{dim} 次元に切り下げた "
               f"(テスト数 {len(texts)} / 語彙数 {X.shape[1]})")
-    if warn and not full and dim >= len(texts) - 1:
+    if warn and dim >= len(texts) - 1:
         print(f"[WARN] lsa: 次元 {dim} がテスト数-1 以上のため圧縮になっていない．"
               f"tfidf のほぼ回転であり独立した表現ではない")
     if dim < 2:
@@ -57,7 +54,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", "-i", required=True)
     ap.add_argument("--output", "-o", required=True)
-    ap.add_argument("--method", "-m", required=True, choices=["tfidf", "lsa", "lsa-full"])
+    ap.add_argument("--method", "-m", required=True, choices=["tfidf", "lsa"])
     ap.add_argument("--min-df", type=int, default=1)
     ap.add_argument("--dim", type=int, default=20)
     a = ap.parse_args()
@@ -70,7 +67,7 @@ def main():
     def encode(warn):
         if a.method == "tfidf":
             return emb_tfidf(texts, a.min_df)
-        return emb_lsa(texts, a.dim if a.method == "lsa" else None, warn)
+        return emb_lsa(texts, a.dim, warn)
 
     cf, tf = time.process_time(), time.perf_counter()
     encode(False)

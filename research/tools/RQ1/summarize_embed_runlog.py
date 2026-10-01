@@ -6,7 +6,9 @@ usage: python tools/RQ1/summarize_embed_runlog.py [--log logs/embed_runlog.csv]
 import argparse, csv, json, os
 from collections import Counter
 
-LEXICAL = ["tfidf", "lsa", "lsa-full"]
+LEXICAL = ["tfidf", "lsa"]
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "conditions.json"), encoding="utf-8") as _f:
+    KNOWN = [c["name"] for c in json.load(_f)]
 
 
 def num(r, k):
@@ -20,6 +22,9 @@ def main():
 
     with open(a.log, encoding="utf-8-sig") as f:
         log = list(csv.DictReader(f))
+    # 条件の表から外した条件（lsa-full など）の行は，記録に残したまま集計には入れない
+    dropped = Counter(r["model"] for r in log if r["model"] not in KNOWN)
+    log = [r for r in log if r["model"] in KNOWN]
     latest = {}
     for r in log:
         latest[(r["model"], r["app"], r["variant"])] = r
@@ -41,6 +46,8 @@ def main():
     print(f"行数 {len(log)} / 条件・アプリ・バリアントの組 {len(latest)} / 集計に使う行 {len(rows)}"
           f"（組ごとに最後の行．再実行で置き換わった {len(log) - len(latest)} 行と，最後が failed の {len(failed)} 組を除く）"
           f" / 条件 {len(conds)}")
+    if dropped:
+        print("  条件の表に無い条件の行は集計に入れない: " + " ".join(f"{m} {n}行" for m, n in dropped.items()))
     for r in failed:
         print(f"  最後が failed: {r['model']} {r['app']}/{r['variant']}"
               f"（経過 {num(r, 'total_s'):.0f} 秒，外から見た確保量のピーク {r['peak_commit_ext_mb'] or '-'} MB）")

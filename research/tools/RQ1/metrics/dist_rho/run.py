@@ -47,11 +47,11 @@ def mantel(obs, nulls, common, perms):
     ps = [(1 + int((nulls[app] >= obs[app]).sum())) / (perms + 1) for app in common]
     # アプリごとの p を Fisher の方法で統合する
     p_fisher = float(stats.chi2.sf(-2.0 * float(np.sum(np.log(ps))), 2 * len(ps)))
-    return {"p_fisher": f"{p_fisher:.3e}", "p_max": f"{max(ps):.3e}"}
+    return {"p_fisher": f"{p_fisher:.3e}"}
 
 
 if __name__ == "__main__":
     run("dist_rho", prepare, contrib=contrib_macro, perms_default=PERMS,
         pair_fn=rho_and_null, extra_cols=mantel,
         show_cols=(("p(統合)", 11, lambda r: r["p_fisher"]),),
-        footer=lambda a: f"p の下限は 1/(perms+1) = {1.0 / (a.perms + 1):.5f}")
+        footer=lambda a: f"p の下限は 1/(perms+1) = {1.0 / (a.perms + 1):.5f}", bounds=(-1.0, 1.0))

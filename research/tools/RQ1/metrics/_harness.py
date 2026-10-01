@@ -2,14 +2,10 @@
 """指標ごとの run.py が共有する土台．直接実行しない"""
 import argparse, csv, itertools, json, os, zlib
 import numpy as np
+from scipy import stats
 
-
-BOOT = 10000
 SEED = 0
-# 陽性対照にだけ使い，表現どうしの比較には入れない
-REFERENCE_ONLY = ("lsa-full",)
-DEFAULT_POSITIVE = ["tfidf", "lsa-full"]
-# 類似度はこの桁で丸めてから比べる．数学的に等しい値（tfidf と lsa-full の同点など）が 1e-16 の誤差で別の順位にならないように
+# 類似度はこの桁で丸めてから比べる．数学的に等しい値（同じテキストの行など）が 1e-16 の誤差で別の順位にならないように
 DECIMALS = 12
 with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "conditions.json"), encoding="utf-8") as _f:
     _CONDITIONS = json.load(_f)
@@ -60,9 +56,28 @@ def contrib_macro(v, n, k):
     return (0.0, 0.0) if v != v else (v, 1.0)
 
 
+def t_interval(num, den, bounds=(-np.inf, np.inf), level=0.95):
+    """アプリごとの (分子, 分母) から，分子の和 ÷ 分母の和と，その区間を返す
+
+    アプリを単位にした残差 e = 分子 − 値 × 分母 から標準誤差を出し，t 分布（自由度 = アプリ数 − 1）を使う．
+    分母が1ならアプリごとの値の平均 ± t × 標準偏差 / √アプリ数 と同じになる．区間は値の取りうる範囲 bounds で切る
+    """
+    num, den = np.asarray(num, dtype=float), np.asarray(den, dtype=float)
+    use = den > 0
+    g, total = int(use.sum()), den[use].sum()
+    if g == 0:
+        return float("nan"), float("nan"), float("nan")
+    value = float(num[use].sum() / total)
+    if g < 2:
+        return value, float("nan"), float("nan")
+    e = num[use] - value * den[use]
+    half = stats.t.ppf(0.5 + level / 2, g - 1) * np.sqrt(g / (g - 1) * (e ** 2).sum()) / total
+    return value, float(max(value - half, bounds[0])), float(min(value + half, bounds[1]))
+
+
 def run(metric, prepare, compare=None, permute=None, contrib=contrib_micro,
         key_list=None, show_keys=None, perms_default=1000,
-        pair_fn=None, extra_cols=None, show_cols=(), footer=None, ceiling=1.0):
+        pair_fn=None, extra_cols=None, show_cols=(), footer=None, bounds=(0.0, 1.0)):
     if (compare is None) == (pair_fn is None):
         raise SystemExit("compare か pair_fn のどちらか一方を渡すこと")
     if compare is not None and permute is None:
@@ -80,18 +95,13 @@ def run(metric, prepare, compare=None, permute=None, contrib=contrib_micro,
     ap.add_argument("--variant", default="full", choices=["title", "steps", "expect", "full"])
     ap.add_argument("--exclude", nargs="*", default=[])
     ap.add_argument("--only", nargs="*", default=None)
-    ap.add_argument("--positive", nargs=2, default=DEFAULT_POSITIVE, metavar=("A", "B"),
-                    help="陽性対照にする2表現（既定 tfidf lsa-full）")
     ap.add_argument("--perms", type=int, default=perms_default,
-                    help=f"陰性対照の並べ替え回数（既定 {perms_default}）")
-    ap.add_argument("--boot", type=int, default=BOOT, help=f"区間のための復元抽出の回数（既定 {BOOT}）")
+                    help=f"偶然一致の水準を測る並べ替えの回数（既定 {perms_default}）")
     ap.add_argument("--out", "-o", default=None,
                     help=f"出力 CSV（既定 results/metrics/{metric}/{{corpus_name}}_{{variant}}.csv）")
     a = ap.parse_args()
     if a.perms < 1:
         raise SystemExit("--perms は1以上にすること")
-    if a.boot < 100:
-        raise SystemExit("--boot は100以上にすること（区間が粗くなりすぎる）")
     if len(set(a.apps)) != len(a.apps):
         raise SystemExit("--apps に同じアプリが2回ある")
     out = a.out or os.path.join("results", "metrics", metric, f"{a.corpus_name}_{a.variant}.csv")
@@ -102,44 +112,42 @@ def run(metric, prepare, compare=None, permute=None, contrib=contrib_micro,
     for m in list(a.exclude) + list(a.only or []):
         if m not in KNOWN:
             raise SystemExit(f"{m} は conditions.json の条件に無い")
-    for m in list(a.only or []) + list(a.positive):
+    for m in a.only or []:
         if m in a.exclude or m not in found:
             raise SystemExit(f"{m} が {a.embeddings} に無いか，--exclude で外されている")
     unknown = [d for d in found if d not in KNOWN]
     if unknown:
-        raise SystemExit(f"conditions.json に無い条件のフォルダがある（指標の計算に混ざる）: {' '.join(unknown)}")
+        raise SystemExit(f"conditions.json に無い条件のフォルダがある（指標の計算に混ざる）: {' '.join(unknown)}\n"
+                         f"  {a.embeddings} の外へ移すこと")
     if a.only is None:
         lack = [m for m in DEFAULT if m not in found and m not in a.exclude]
         if lack:
             raise SystemExit(f"既定の条件のフォルダが無い: {' '.join(lack)}\n"
                              "  作るか，作れなかった条件なら --exclude で外すこと")
-    models = [m for m in found if m not in REFERENCE_ONLY and m not in a.exclude
-              and (a.only is None or m in a.only)]
+    models = [m for m in found if m not in a.exclude and (a.only is None or m in a.only)]
     if len(models) < 2:
         raise SystemExit("比べる表現が2件未満")
     print(f"表現 {len(models)}件: {' '.join(models)}")
     if a.exclude:
         print(f"外した条件 {len(a.exclude)}件: {' '.join(a.exclude)}")
 
-    need = sorted(set(models) | set(a.positive))
-    per = {m: {} for m in need}
-    for m in need:
+    per = {m: {} for m in models}
+    for m in models:
         for app in a.apps:
             X = load(a.embeddings, a.corpus, m, app, a.variant)
             if X is not None:
                 per[m][app] = X
     # アプリだけを外すと全ての組の集計範囲が変わるので，黙って外さない
-    missing = [f"{m}/{app}_{a.variant}.json" for m in need for app in a.apps if app not in per[m]]
+    missing = [f"{m}/{app}_{a.variant}.json" for m in models for app in a.apps if app not in per[m]]
     if missing:
         raise SystemExit(f"ベクトルが無い（{len(missing)}件）: {' '.join(missing)}\n"
                          "  作り直すか，作れなかった条件なら --exclude で条件ごと外すこと")
     common = list(a.apps)
     print(f"アプリ {len(common)}件: {' '.join(common)}")
 
-    ns = {app: len(per[need[0]][app]) for app in common}
-    prep = {(m, app): prepare(per[m][app]) for m in need for app in common}
+    ns = {app: len(per[models[0]][app]) for app in common}
+    prep = {(m, app): prepare(per[m][app]) for m in models for app in common}
     keys = key_list(ns)
-    boot = np.random.default_rng(SEED).integers(0, len(common), size=(a.boot, len(common)))
 
     def to_arrays(raw):
         out = {}
@@ -152,11 +160,6 @@ def run(metric, prepare, compare=None, permute=None, contrib=contrib_micro,
     def agg(num, den):
         s = den.sum()
         return float(num.sum() / s) if s > 0 else float("nan")
-
-    def agg_boot(num, den):
-        d = den[boot].sum(1)
-        with np.errstate(invalid="ignore", divide="ignore"):
-            return np.where(d > 0, num[boot].sum(1) / np.where(d > 0, d, 1), np.nan)
 
     def evaluate(x, y):
         if pair_fn is not None:
@@ -174,46 +177,19 @@ def run(metric, prepare, compare=None, permute=None, contrib=contrib_micro,
                          for app in common})
         return to_arrays(vals), [to_arrays(d) for d in null], None, None
 
-    # 陽性対照は1回だけ測り，全ての行で使い回す
-    pos = evaluate(*a.positive)
-    pos_arr, pos_null = pos[0], pos[1]
-    positive = {k: agg(*pos_arr[k]) for k in keys}
-    pos_boot = {k: agg_boot(*pos_arr[k]) for k in keys}
-    # 既定の陽性対照は類似度が tfidf と一致するので，どの指標でも上限そのものになるはず
-    if list(a.positive) == DEFAULT_POSITIVE:
-        off = [k for k in keys if not abs(positive[k] - ceiling) <= 1e-9]
-        if off:
-            raise SystemExit(f"陽性対照 {' ↔ '.join(a.positive)} が上限 {ceiling} と一致しない: "
-                             + " ".join(f"k={k}:{positive[k]:.6f}" if k != "" else f"{positive[k]:.6f}" for k in off)
-                             + "\n  lsa-full が古い版で作られたか，同点の扱いが崩れている")
-
     rows = []
-    pairs = [("positive", *a.positive)] + [("actual", x, y) for x, y in itertools.combinations(models, 2)]
-    for kind, x, y in pairs:
-        arr, null, obs, nulls = pos if kind == "positive" else evaluate(x, y)
+    for x, y in itertools.combinations(models, 2):
+        arr, null, obs, nulls = evaluate(x, y)
         for k in keys:
-            num, den = arr[k]
-            value = agg(num, den)
+            value, lo, hi = t_interval(*arr[k], bounds=bounds)
             series = np.array([agg(*d[k]) for d in null])
-            cm, csd = float(np.nanmean(series)), float(np.nanstd(series))
-            cnum = np.nanmean([d[k][0] for d in null], axis=0)
-            cden = np.nanmean([d[k][1] for d in null], axis=0)
-            vb, cb = agg_boot(num, den), agg_boot(cnum, cden)
-            with np.errstate(invalid="ignore", divide="ignore"):
-                sb = (vb - cb) / (pos_boot[k] - cb)
-            lo, hi = np.nanpercentile(vb, [2.5, 97.5])
-            slo, shi = np.nanpercentile(sb, [2.5, 97.5])
-            wide = positive[k] - cm
             row = dict(
-                corpus=a.corpus_name, variant=a.variant, metric=metric, k=k, kind=kind,
+                corpus=a.corpus_name, variant=a.variant, metric=metric, k=k,
                 model_a=x, model_b=y, n=sum(ns[app] for app in common), n_apps=len(common),
                 apps=" ".join(common), excluded=" ".join(sorted(set(a.exclude))),
-                value=round(value, 6), value_lo=round(float(lo), 6), value_hi=round(float(hi), 6),
-                chance_mean=round(cm, 6), chance_sd=round(csd, 6), positive=round(positive[k], 6),
-                scaled=round((value - cm) / wide, 6) if wide != 0 else "",
-                scaled_lo=round(float(slo), 6) if wide != 0 else "",
-                scaled_hi=round(float(shi), 6) if wide != 0 else "",
-                perms=a.perms, boot=a.boot)
+                value=round(value, 6), value_lo=round(lo, 6), value_hi=round(hi, 6),
+                chance_mean=round(float(np.nanmean(series)), 6), chance_sd=round(float(np.nanstd(series)), 6),
+                perms=a.perms)
             if extra_cols is not None:
                 row.update(extra_cols(obs, nulls, common, a.perms))
             rows.append(row)
@@ -229,18 +205,17 @@ def run(metric, prepare, compare=None, permute=None, contrib=contrib_micro,
 
     show = [r for r in rows if r["k"] in show_keys(keys)]
     with_k = len(keys) > 1 or keys[0] != ""
-    head = f"\n{'種類':<10}{'表現A':<28}{'表現B':<28}"
+    head = f"\n{'表現A':<28}{'表現B':<28}"
     if with_k:
         head += f"{'k':>4}"
-    head += f"{'値':>9}{'偶然':>9}{'位置':>8}{'位置の95%区間':>20}"
+    head += f"{'値':>9}{'95%区間':>20}{'偶然':>9}"
     print(head + "".join(f"{label:>{w}}" for label, w, _ in show_cols))
     for r in show:
-        sc = f"{r['scaled']:.3f}" if r["scaled"] != "" else "-"
-        ci = f"[{r['scaled_lo']:.3f}, {r['scaled_hi']:.3f}]" if r["scaled_lo"] != "" else "-"
-        line = f"{r['kind']:<10}{r['model_a']:<28}{r['model_b']:<28}"
+        line = f"{r['model_a']:<28}{r['model_b']:<28}"
         if with_k:
             line += f"{str(r['k']):>4}"
-        line += f"{r['value']:>9.4f}{r['chance_mean']:>9.4f}{sc:>8}{ci:>20}"
+        ci = f"[{r['value_lo']:.3f}, {r['value_hi']:.3f}]"
+        line += f"{r['value']:>9.4f}{ci:>20}{r['chance_mean']:>9.4f}"
         print(line + "".join(f"{col(r):>{w}}" for _, w, col in show_cols))
     if len(show) < len(rows):
         print(f"（表示は k={' '.join(str(k) for k in show_keys(keys))} のみ．CSV には k={keys[0]}〜{keys[-1]} の全てが入っている）")

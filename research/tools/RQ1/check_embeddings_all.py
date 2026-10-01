@@ -28,8 +28,6 @@ def main():
     for cond in a.exclude:
         if cond not in CONDITIONS:
             raise SystemExit(f"{cond} は conditions.json の既定の条件に無い")
-        if cond in ("tfidf", "lsa-full"):
-            raise SystemExit(f"{cond} は陽性対照に使うので外せない")
 
     corpus_path = {(app, v): os.path.join(a.corpus_dir, f"{app}_{v}.json") for app in APPS for v in VARIANTS}
     corpus = {k: load(p) for k, p in corpus_path.items()}
@@ -92,7 +90,7 @@ def main():
                     elif np.array_equal(X[i], X[j]):
                         same_vec += 1
                         examples.append(f"  {cond} {app}/{v} [{i}]「{texts[i]}」 [{j}]「{texts[j]}」")
-        if cond not in ("tfidf", "lsa-full") and len(dims) > 1:
+        if cond != "tfidf" and len(dims) > 1:
             print(f"[FAIL] {cond}: ファイルによって次元が違う {sorted(dims)}")
             fails += 1
         n_files += files
