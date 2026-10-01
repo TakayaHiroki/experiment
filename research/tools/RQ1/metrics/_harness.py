@@ -8,6 +8,17 @@ BOOT = 10000
 SEED = 0
 # 陽性対照にだけ使い，表現どうしの比較には入れない
 REFERENCE_ONLY = ("lsa-full",)
+DEFAULT_POSITIVE = ["tfidf", "lsa-full"]
+# 類似度はこの桁で丸めてから比べる．数学的に等しい値（tfidf と lsa-full の同点など）が 1e-16 の誤差で別の順位にならないように
+DECIMALS = 12
+with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "conditions.json"), encoding="utf-8") as _f:
+    _CONDITIONS = json.load(_f)
+KNOWN = [c["name"] for c in _CONDITIONS]
+DEFAULT = [c["name"] for c in _CONDITIONS if c["default"]]
+
+
+def similarity(X):
+    return np.round(X @ X.T, DECIMALS)
 
 
 def load(emb_dir, corpus_dir, model, app, variant):
@@ -51,7 +62,7 @@ def contrib_macro(v, n, k):
 
 def run(metric, prepare, compare=None, permute=None, contrib=contrib_micro,
         key_list=None, show_keys=None, perms_default=1000,
-        pair_fn=None, extra_cols=None, show_cols=(), footer=None):
+        pair_fn=None, extra_cols=None, show_cols=(), footer=None, ceiling=1.0):
     if (compare is None) == (pair_fn is None):
         raise SystemExit("compare か pair_fn のどちらか一方を渡すこと")
     if compare is not None and permute is None:
@@ -69,7 +80,7 @@ def run(metric, prepare, compare=None, permute=None, contrib=contrib_micro,
     ap.add_argument("--variant", default="full", choices=["title", "steps", "expect", "full"])
     ap.add_argument("--exclude", nargs="*", default=[])
     ap.add_argument("--only", nargs="*", default=None)
-    ap.add_argument("--positive", nargs=2, default=["tfidf", "lsa-full"], metavar=("A", "B"),
+    ap.add_argument("--positive", nargs=2, default=DEFAULT_POSITIVE, metavar=("A", "B"),
                     help="陽性対照にする2表現（既定 tfidf lsa-full）")
     ap.add_argument("--perms", type=int, default=perms_default,
                     help=f"陰性対照の並べ替え回数（既定 {perms_default}）")
@@ -81,21 +92,34 @@ def run(metric, prepare, compare=None, permute=None, contrib=contrib_micro,
         raise SystemExit("--perms は1以上にすること")
     if a.boot < 100:
         raise SystemExit("--boot は100以上にすること（区間が粗くなりすぎる）")
+    if len(set(a.apps)) != len(a.apps):
+        raise SystemExit("--apps に同じアプリが2回ある")
     out = a.out or os.path.join("results", "metrics", metric, f"{a.corpus_name}_{a.variant}.csv")
 
     if not os.path.isdir(a.embeddings):
         raise SystemExit(f"{a.embeddings} が無い")
     found = sorted(d for d in os.listdir(a.embeddings) if os.path.isdir(os.path.join(a.embeddings, d)))
-    for m in list(a.exclude) + list(a.only or []) + list(a.positive):
-        if m not in found:
-            raise SystemExit(f"{m} が {a.embeddings} に無い")
-    models = [m for m in found if m not in REFERENCE_ONLY]
-    if a.only:
-        models = [m for m in models if m in a.only]
-    models = [m for m in models if m not in a.exclude]
+    for m in list(a.exclude) + list(a.only or []):
+        if m not in KNOWN:
+            raise SystemExit(f"{m} は conditions.json の条件に無い")
+    for m in list(a.only or []) + list(a.positive):
+        if m in a.exclude or m not in found:
+            raise SystemExit(f"{m} が {a.embeddings} に無いか，--exclude で外されている")
+    unknown = [d for d in found if d not in KNOWN]
+    if unknown:
+        raise SystemExit(f"conditions.json に無い条件のフォルダがある（指標の計算に混ざる）: {' '.join(unknown)}")
+    if a.only is None:
+        lack = [m for m in DEFAULT if m not in found and m not in a.exclude]
+        if lack:
+            raise SystemExit(f"既定の条件のフォルダが無い: {' '.join(lack)}\n"
+                             "  作るか，作れなかった条件なら --exclude で外すこと")
+    models = [m for m in found if m not in REFERENCE_ONLY and m not in a.exclude
+              and (a.only is None or m in a.only)]
     if len(models) < 2:
         raise SystemExit("比べる表現が2件未満")
     print(f"表現 {len(models)}件: {' '.join(models)}")
+    if a.exclude:
+        print(f"外した条件 {len(a.exclude)}件: {' '.join(a.exclude)}")
 
     need = sorted(set(models) | set(a.positive))
     per = {m: {} for m in need}
@@ -104,13 +128,13 @@ def run(metric, prepare, compare=None, permute=None, contrib=contrib_micro,
             X = load(a.embeddings, a.corpus, m, app, a.variant)
             if X is not None:
                 per[m][app] = X
-    common = [app for app in a.apps if all(app in per[m] for m in need)]
-    for app in a.apps:
-        if app not in common:
-            print(f"  [除外] {app}: {' '.join(m for m in need if app not in per[m])} が無い")
-    if not common:
-        raise SystemExit("全表現が揃うアプリが無い")
-    print(f"全表現が揃うアプリ {len(common)}件: {' '.join(common)}")
+    # アプリだけを外すと全ての組の集計範囲が変わるので，黙って外さない
+    missing = [f"{m}/{app}_{a.variant}.json" for m in need for app in a.apps if app not in per[m]]
+    if missing:
+        raise SystemExit(f"ベクトルが無い（{len(missing)}件）: {' '.join(missing)}\n"
+                         "  作り直すか，作れなかった条件なら --exclude で条件ごと外すこと")
+    common = list(a.apps)
+    print(f"アプリ {len(common)}件: {' '.join(common)}")
 
     ns = {app: len(per[need[0]][app]) for app in common}
     prep = {(m, app): prepare(per[m][app]) for m in need for app in common}
@@ -155,6 +179,13 @@ def run(metric, prepare, compare=None, permute=None, contrib=contrib_micro,
     pos_arr, pos_null = pos[0], pos[1]
     positive = {k: agg(*pos_arr[k]) for k in keys}
     pos_boot = {k: agg_boot(*pos_arr[k]) for k in keys}
+    # 既定の陽性対照は類似度が tfidf と一致するので，どの指標でも上限そのものになるはず
+    if list(a.positive) == DEFAULT_POSITIVE:
+        off = [k for k in keys if not abs(positive[k] - ceiling) <= 1e-9]
+        if off:
+            raise SystemExit(f"陽性対照 {' ↔ '.join(a.positive)} が上限 {ceiling} と一致しない: "
+                             + " ".join(f"k={k}:{positive[k]:.6f}" if k != "" else f"{positive[k]:.6f}" for k in off)
+                             + "\n  lsa-full が古い版で作られたか，同点の扱いが崩れている")
 
     rows = []
     pairs = [("positive", *a.positive)] + [("actual", x, y) for x, y in itertools.combinations(models, 2)]
@@ -176,6 +207,7 @@ def run(metric, prepare, compare=None, permute=None, contrib=contrib_micro,
             row = dict(
                 corpus=a.corpus_name, variant=a.variant, metric=metric, k=k, kind=kind,
                 model_a=x, model_b=y, n=sum(ns[app] for app in common), n_apps=len(common),
+                apps=" ".join(common), excluded=" ".join(sorted(set(a.exclude))),
                 value=round(value, 6), value_lo=round(float(lo), 6), value_hi=round(float(hi), 6),
                 chance_mean=round(cm, 6), chance_sd=round(csd, 6), positive=round(positive[k], 6),
                 scaled=round((value - cm) / wide, 6) if wide != 0 else "",

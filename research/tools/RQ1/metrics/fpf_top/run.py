@@ -9,13 +9,13 @@ import os, sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from _harness import run
+from _harness import run, similarity
 
 SHOW_KS = (5, 10, 20)
 
 
 def prepare(X):
-    D = 1.0 - X @ X.T
+    D = 1.0 - similarity(X)
     n = len(X)
     # 開始点は他との距離の総和が最大の1件
     sel = [int(np.argmax(D.sum(axis=1)))]

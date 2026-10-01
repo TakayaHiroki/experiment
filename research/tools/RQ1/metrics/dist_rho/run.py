@@ -10,14 +10,14 @@ import numpy as np
 from scipy import stats
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from _harness import contrib_macro, run
+from _harness import contrib_macro, run, similarity
 
 # p の下限を 1/(perms+1) にするための回数
 PERMS = 1999
 
 
 def prepare(X):
-    S = X @ X.T
+    S = similarity(X)
     n = S.shape[0]
     iu = np.triu_indices(n, 1)
     R = np.zeros_like(S)

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """作成したベクトル（embeddings/bewt/{条件}/{app}_{variant}.json）を全ファイル検査する
 
-usage: python tools/RQ1/check_embeddings_all.py [--emb-dir embeddings/bewt] [--corpus-dir corpus/bewt/json]
+usage: python tools/RQ1/check_embeddings_all.py [--emb-dir embeddings/bewt] [--corpus-dir corpus/bewt/json] [--exclude 条件 ...]
 """
-import argparse, itertools, json, os, sys
+import argparse, hashlib, itertools, json, os, sys
 import numpy as np
 
 APPS = ["bludit", "claroline", "expresscart", "joomla", "kanboard", "mantisbt", "mediawiki", "prestashop"]
@@ -22,12 +22,20 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--emb-dir", default="embeddings/bewt")
     ap.add_argument("--corpus-dir", default="corpus/bewt/json")
+    ap.add_argument("--exclude", nargs="*", default=[],
+                    help="作れなかった条件（実行記録で status=failed）．指標の --exclude と同じ名前を渡す")
     a = ap.parse_args()
+    for cond in a.exclude:
+        if cond not in CONDITIONS:
+            raise SystemExit(f"{cond} は conditions.json の既定の条件に無い")
+        if cond in ("tfidf", "lsa-full"):
+            raise SystemExit(f"{cond} は陽性対照に使うので外せない")
 
     corpus_path = {(app, v): os.path.join(a.corpus_dir, f"{app}_{v}.json") for app in APPS for v in VARIANTS}
     corpus = {k: load(p) for k, p in corpus_path.items()}
     n_files = n_fail = 0
     examples = []
+    digest = {}
 
     print(f"{'条件':<28}{'ファイル':>6}{'不合格':>6}  {'次元':<8}{'|長さ-1|最大':>12}"
           f"{'異テキスト一致':>14}{'同テキスト差':>12}{'1-cos':>10}")
@@ -36,6 +44,11 @@ def main():
             print(f"[FAIL] {name}: 想定外の条件のフォルダ（指標の計算に混ざる）")
             n_fail += 1
     for cond in CONDITIONS:
+        if cond in a.exclude:
+            have = sum(os.path.exists(os.path.join(a.emb_dir, cond, f"{app}_{v}.json")) for app in APPS for v in VARIANTS)
+            note = "．全ファイルあるので，外す必要があるか確かめる" if have == len(APPS) * len(VARIANTS) else ""
+            print(f"[除外] {cond}: 検査しない（ファイル {have}/{len(APPS) * len(VARIANTS)}{note}）")
+            continue
         if not os.path.isdir(os.path.join(a.emb_dir, cond)):
             print(f"[FAIL] {cond}: 条件のフォルダが無い（{len(APPS) * len(VARIANTS)} ファイル）")
             n_fail += len(APPS) * len(VARIANTS)
@@ -69,6 +82,7 @@ def main():
                     fails += 1
                     continue
                 dims.add(X.shape[1])
+                digest[(cond, app, v)] = hashlib.sha1(X.tobytes()).hexdigest()
                 max_dev = max(max_dev, np.abs(norms - 1).max())
                 Z = X / norms[:, None]
                 for i, j in itertools.combinations(range(len(X)), 2):
@@ -87,6 +101,19 @@ def main():
         print(f"{cond:<28}{files:>6}{fails:>6}  {dim:<8}{max_dev:>12.2e}"
               f"{same_vec:>14}{max_diff:>12.2e}{max_1cos:>10.2e}")
 
+    # 同じモデルの前置きあり・なし，bfloat16・float32 は値が違うはず．完全に同じなら，その設定が効いていない
+    for cond in CONDITIONS:
+        for mark in ("+sts", "@fp32"):
+            partner = cond.replace(mark, "")
+            if mark not in cond or partner not in CONDITIONS or {cond, partner} & set(a.exclude):
+                continue
+            same = [f"{app}_{v}" for app in APPS for v in VARIANTS
+                    if (cond, app, v) in digest and digest[(cond, app, v)] == digest.get((partner, app, v))]
+            if same:
+                print(f"[FAIL] {cond}: {partner} と完全に同じベクトルのファイルが {len(same)} 件"
+                      f"（{mark} の設定が効いていない）: {' '.join(same)}")
+                n_fail += len(same)
+
     print("テキストが異なるのにベクトルが完全に一致する組:")
     print("\n".join(examples) if examples else "  なし")
 
@@ -102,7 +129,8 @@ def main():
             if n >= 5:
                 print(f"          {app}: {n}件「{t}」")
 
-    print(f"ファイル {n_files} 件 / 不合格 {n_fail} 件")
+    print(f"ファイル {n_files} 件 / 不合格 {n_fail} 件"
+          + (f" / 外した条件 {len(a.exclude)} 件: {' '.join(a.exclude)}" if a.exclude else ""))
     if n_fail:
         sys.exit(1)
 

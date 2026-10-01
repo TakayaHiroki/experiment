@@ -9,11 +9,11 @@ import os, sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from _harness import contrib_micro, run
+from _harness import contrib_micro, run, similarity
 
 
 def prepare(X):
-    S = X @ X.T
+    S = similarity(X)
     # 自分自身を最近傍にしない
     np.fill_diagonal(S, -np.inf)
     return S.argmax(axis=1)

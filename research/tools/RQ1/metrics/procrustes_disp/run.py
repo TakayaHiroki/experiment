@@ -37,4 +37,4 @@ def compare(A, B):
 
 
 if __name__ == "__main__":
-    run("procrustes_disp", prepare, compare=compare, permute=permute, contrib=contrib_macro)
+    run("procrustes_disp", prepare, compare=compare, permute=permute, contrib=contrib_macro, ceiling=0.0)

@@ -9,11 +9,11 @@ import os, sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from _harness import contrib_macro, run
+from _harness import contrib_macro, run, similarity
 
 
 def prepare(X):
-    return X @ X.T
+    return similarity(X)
 
 
 def permute(S, p):

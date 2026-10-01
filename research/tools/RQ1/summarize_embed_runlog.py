@@ -75,8 +75,10 @@ def main():
     print("\n3. モデルファイルの先読み（1GiB = 2^30 バイト．置き換わった行も含め，先読みした回ごと）")
     for r in log:
         if r["t_warm_s"]:
-            gib = num(r, "warm_bytes") / 2**30
-            print(f"{r['model']:<28} {gib:5.1f} GiB  {num(r, 't_warm_s'):6.2f} 秒  {gib / num(r, 't_warm_s'):.2f} GiB/秒")
+            gib, t = num(r, "warm_bytes") / 2**30, num(r, "t_warm_s")
+            # 記録は小数第2位までなので，0.01秒未満は 0.00 になる
+            speed = f"{gib / t:.2f}" if t > 0 else "-"
+            print(f"{r['model']:<28} {gib:5.1f} GiB  {t:6.2f} 秒  {speed} GiB/秒")
 
     print("\n4. status の件数（組ごとの最後の行）")
     for k, n in Counter(r["status"] for r in latest.values()).most_common():
