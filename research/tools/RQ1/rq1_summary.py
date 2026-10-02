@@ -3,7 +3,7 @@
 
 節の構成は P5-1 の結果を見る前に決めた（2026-10-02）．
 1 一致の大きさ（偶然一致の水準・計算精度だけが違う組と並べる．順位相関と Mantel 検定の一文）
-2 11表現の一致の表  3 系統の対比（1つ）  4 FPF の曲線  5 前置きの効果  6 入力テキストの成分
+2 11表現の一致の表  3 系統の対比（1つ）  4 最遠点優先走査の曲線  5 前置きの効果  6 入力テキストの成分
 付録 全ての組の値
 
 usage:
@@ -15,18 +15,18 @@ from scipy import stats as _st
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "metrics"))
 import _harness
-# 測り直しには指標のスクリプトと同じ FPF の選び方を使う
+# 測り直しには指標のスクリプトと同じ最遠点優先走査の選び方を使う
 _spec = importlib.util.spec_from_file_location(
-    "fpf_top_run", os.path.join(os.path.dirname(os.path.abspath(__file__)), "metrics", "fpf_top", "run.py"))
-_FPF = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_FPF)
+    "farthest_top_run", os.path.join(os.path.dirname(os.path.abspath(__file__)), "metrics", "farthest_top", "run.py"))
+_FARTHEST = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_FARTHEST)
 
 LEX = {"tfidf", "lsa"}
 BEWT8 = ["bludit", "claroline", "expresscart", "joomla",
          "kanboard", "mantisbt", "mediawiki", "prestashop"]
 METRIC_DIR = "results/metrics"
-METRICS = ["nn_agree", "fpf_top", "dist_rho"]
-FPF_KS = (5, 10)
+METRICS = ["nn_agree", "farthest_top", "dist_rho"]
+FARTHEST_KS = (5, 10)
 # 同じモデルの条件違いを系統の平均に混ぜない
 CONDITION_MARKS = ("+sts", "@fp32")
 # 入力テキストの比較で，最近傍の同点とみなす類似度の差の下限．
@@ -241,24 +241,24 @@ def main():
     # 前置きだけが違う組（前置きなし ↔ +sts）．精度は同じもの同士
     pfx = sorted({(m.replace("+sts", ""), m) for m in reps if "+sts" in m and m.replace("+sts", "") in reps},
                  key=lambda p: (p[0].endswith("@fp32"), rep_order(p[0].replace("@fp32", ""))))
-    cols = [("nn_agree", "最近傍", "")] + [("fpf_top", f"FPF@{k}", str(k)) for k in FPF_KS] + [("dist_rho", "順位相関", "")]
+    cols = [("nn_agree", "最近傍", "")] + [("farthest_top", f"最遠点@{k}", str(k)) for k in FARTHEST_KS] + [("dist_rho", "順位相関", "")]
 
     def val(m, p, k=""):
         return cell(row_of(M, m, *p, k))
 
-    # 全ての組について，埋め込みから測り直した最近傍の一致と FPF@5 が CSV と合うかを確かめる．
+    # 全ての組について，埋め込みから測り直した最近傍の一致と最遠点@5 が CSV と合うかを確かめる．
     # 合わなければ，CSV を作ったあとに埋め込みか指標のスクリプトが変わった
     E = {m: {app: load(emb, cdir, m, app, a.variant) for app in apps} for m in reps}
     den = np.array([len(E[reps[0]][app]) for app in apps])
     if int(den.sum()) != n_tests:
         raise SystemExit(f"埋め込みのテスト数（{int(den.sum())}）が CSV の n（{n_tests}）と違う")
     nns = {(m, app): nn_of(E[m][app])[0] for m in reps for app in apps}
-    tops = {(m, app): set(_FPF.prepare(E[m][app])[:5]) for m in reps for app in apps}
+    tops = {(m, app): set(_FARTHEST.prepare(E[m][app])[:5]) for m in reps for app in apps}
     hits = {}
     for x, y in pairs_all:
         hits[(x, y)] = np.array([int((nns[(x, app)] == nns[(y, app)]).sum()) for app in apps])
         checks = [("最近傍の一致", "nn_agree", "", hits[(x, y)].sum() / den.sum()),
-                  ("FPF@5", "fpf_top", "5", float(np.mean([len(tops[(x, app)] & tops[(y, app)]) / 5 for app in apps])))]
+                  ("最遠点@5", "farthest_top", "5", float(np.mean([len(tops[(x, app)] & tops[(y, app)]) / 5 for app in apps])))]
         for lab, m, k, w in checks:
             v = val(m, (x, y), k)
             if abs(v - w) > 1e-6:
@@ -270,13 +270,13 @@ def main():
     W("報告書に載せる集計値はすべてここから引き写す．"
       "手計算を挟まないことで，集計範囲の違う数値が混ざる事故を防ぐ．"
       "節の構成は，一致の測定（P5-1）の結果を見る前に決めた（2026-10-02）．\n")
-    W(f"入力は `{METRIC_DIR}/{{指標}}/{a.corpus_name}_{a.variant}.csv`（`nn_agree`・`fpf_top`・`dist_rho`）．"
+    W(f"入力は `{METRIC_DIR}/{{指標}}/{a.corpus_name}_{a.variant}.csv`（`nn_agree`・`farthest_top`・`dist_rho`）．"
       "3本の CSV が同じ表現の組・同じアプリで計算されたことを確かめてから集計している．\n")
     W(f"アプリ {len(apps)}件（{' '.join(apps)}）・テスト {n_tests}件．表現 {len(reps)}件・組 {len(pairs_all)}．"
       f"外した条件: {' '.join(excluded) if excluded else 'なし'}．\n")
     W(f"95%区間は，アプリを単位にした t 区間（自由度 {len(apps) - 1}）．区間はアプリの取り方の揺れだけを表し，比べた表現の顔ぶれは固定として扱う．"
       "偶然一致の水準は，片方の表現の結果についてテスト番号だけを並べ替えて測った値の平均．"
-      "最近傍はテスト単位，FPF と順位相関はアプリ単位の平均（指標のスクリプトと同じ）．\n")
+      "最近傍はテスト単位，最遠点優先走査と順位相関はアプリ単位の平均（指標のスクリプトと同じ）．\n")
 
     # 1. 一致の大きさ
     W(f"\n## 1. 一致の大きさ（前置きなし・配布された精度の{len(base)}表現，{len(base_pairs)}組）\n")
@@ -345,18 +345,21 @@ def main():
         W(f"語彙的手法どうし（{x} ↔ {y}）は1組だけで，{why}系統としてはまとめず個別に示す：{ci(row_of(M, 'nn_agree', x, y))}．\n")
     W("この結論は，ここで比べた表現について言えることで，埋め込みモデル一般には広げない．\n")
 
-    # 4. FPF の曲線
-    ks = sorted({int(k) for (_, _, k) in M["fpf_top"]})
-    W(f"\n## 4. FPF で選ばれる上位k件の重なり（k=1〜{ks[-1]}）\n")
+    # 4. 最遠点優先走査の曲線
+    ks = sorted({int(k) for (_, _, k) in M["farthest_top"]})
+    W(f"\n## 4. 最遠点優先走査で選ばれる上位k件の重なり（k=1〜{ks[-1]}）\n")
+    W("最遠点優先走査（farthest-first traversal; Gonzalez 1985）で各アプリの全テストを並べ，2つの表現で上位k件が重なる割合．"
+      "開始点は他との距離の総和が最大の1件（乱数を使わず同じ入力から同じ順を出すため）．選ぶ順だけを使い，k-center のクラスタリングはしない．"
+      "距離の 1 − コサイン類似度は三角不等式を満たさないので，Gonzalez の2近似の保証は前提にしない（順の一致だけを見るので要らない）．\n")
     W("選ばれるテストの重なり（アプリごとの割合の平均）．k を大きくすると表現と関係なく重なるので，偶然一致の水準と並べて読む．"
-      "FPF は小さな違いでも選ぶ順が変わるので，計算精度だけが違う組の曲線も並べる．k によって入れ替わるので，組み合わせの順位は述べない．\n")
+      "最遠点優先走査は小さな違いでも選ぶ順が変わるので，計算精度だけが違う組の曲線も並べる．k によって入れ替わるので，組み合わせの順位は述べない．\n")
     W("| 組み合わせ | 組の数 | " + " | ".join(f"k={k}" for k in ks) + " |")
     W("|---|---:|" + "---:|" * len(ks))
     for lab, ps in [("埋込 × 埋込", emb_emb), ("語彙 × 埋込", lex_emb)] + [(f"{x} ↔ {y}", [(x, y)]) for x, y in lex_lex + prec]:
         if ps:
-            W(f"| {lab} | {len(ps)} | " + " | ".join(f"{np.mean([val('fpf_top', p, str(k)) for p in ps]):.3f}" for k in ks) + " |")
+            W(f"| {lab} | {len(ps)} | " + " | ".join(f"{np.mean([val('farthest_top', p, str(k)) for p in ps]):.3f}" for k in ks) + " |")
     W("| （偶然一致の水準） | | " + " | ".join(
-        f"{np.mean([cell(row_of(M, 'fpf_top', *p, str(k)), 'chance_mean') for p in base_pairs]):.3f}" for k in ks) + " |")
+        f"{np.mean([cell(row_of(M, 'farthest_top', *p, str(k)), 'chance_mean') for p in base_pairs]):.3f}" for k in ks) + " |")
 
     # 5. 前置きの効果
     if pfx:

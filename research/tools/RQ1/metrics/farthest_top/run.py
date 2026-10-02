@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
-"""FPF 上位k件の重なり（fpf_top）．k は 1 から K_MAX まで出す
+"""最遠点優先走査で選んだ上位k件の重なり（farthest_top）．k は 1 から K_MAX まで出す
+
+最遠点優先走査（farthest-first traversal; Gonzalez 1985．k-center 問題の貪欲法）でアプリの全テストを並べ，
+2つの表現で上位k件がどれだけ重なるかを測る．標準の手順とは次の3点が違う．
+- 開始点: 標準の手順では任意の1件だが，ここでは他との距離の総和が最大の1件にする．
+  乱数を使わず同じ入力から同じ順を出すため．開始点の引き方の揺れが表現どうしの違いに混ざらない
+- クラスタリングはしない: k-center として使うときは選んだ k 件を中心に各テストを割り当てるが，ここでは選ぶ順だけを使う．
+  測りたいのは「表現を変えると先に選ばれるテストが変わるか」で，割り当ては使わないため
+- 2近似の保証は前提にしない: 距離は 1 − コサイン類似度で，これは三角不等式を満たさない
+  （例: x=(1,0), y=(1,1)/√2, z=(0,1) で d(x,y)+d(y,z)≈0.59 < d(x,z)=1）．
+  なので Gonzalez の2近似（k 件の半径が最適の2倍以内）は成り立つとは限らない．この指標は選ぶ順の一致だけを見るので保証は要らない
 
 usage:
-  python tools/RQ1/metrics/fpf_top/run.py -e embeddings/bewt -c corpus/bewt/json \
+  python tools/RQ1/metrics/farthest_top/run.py -e embeddings/bewt -c corpus/bewt/json \
       --corpus-name bewt --apps bludit claroline expresscart joomla kanboard mantisbt mediawiki prestashop
 """
 import os, sys
@@ -63,5 +73,5 @@ def show_keys(keys):
 
 
 if __name__ == "__main__":
-    run("fpf_top", prepare, compare=compare, permute=permute,
+    run("farthest_top", prepare, compare=compare, permute=permute,
         contrib=contrib, key_list=key_list, show_keys=show_keys)
