@@ -1,53 +1,41 @@
 #!/usr/bin/env python3
-"""RQ1 の集計値（BEWT）を，報告書に載せる形でまとめて算出する
-
-節の構成は P5-1 の結果を見る前に決めた（2026-10-02）．
-1 一致の大きさ（偶然一致の水準・計算精度だけが違う組と並べる．順位相関と Mantel 検定の一文）
-2 11表現の一致の表  3 系統の対比（1つ）  4 最遠点優先走査の曲線  5 前置きの効果  6 入力テキストの成分
-付録 全ての組の値
+"""RQ1 の集計値（BEWT）を表ごとの CSV に書き，画面にも出す
 
 usage:
-  python tools/RQ1/rq1_summary.py -o results/rq1_summary.md
+  python tools/RQ1/rq1_summary.py --out-dir results/rq1_summary
 """
 import argparse, csv, importlib.util, itertools, json, os, sys
 import numpy as np
-from scipy import stats as _st
+from scipy import stats
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "metrics"))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_HERE, "metrics"))
 import _harness
-# 測り直しには指標のスクリプトと同じ最遠点優先走査の選び方を使う
-_spec = importlib.util.spec_from_file_location(
-    "farthest_top_run", os.path.join(os.path.dirname(os.path.abspath(__file__)), "metrics", "farthest_top", "run.py"))
+_spec = importlib.util.spec_from_file_location("farthest_top_run", os.path.join(_HERE, "metrics", "farthest_top", "run.py"))
 _FARTHEST = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_FARTHEST)
 
-LEX = {"tfidf", "lsa"}
+with open(os.path.join(_HERE, "conditions.json"), encoding="utf-8") as _f:
+    _CONDITIONS = json.load(_f)
+ORDER = {c["name"]: i for i, c in enumerate(_CONDITIONS)}
+LEX = {c["name"] for c in _CONDITIONS if c["method"] != "model"}
 BEWT8 = ["bludit", "claroline", "expresscart", "joomla",
          "kanboard", "mantisbt", "mediawiki", "prestashop"]
 METRIC_DIR = "results/metrics"
 METRICS = ["nn_agree", "farthest_top", "dist_rho"]
-FARTHEST_KS = (5, 10)
-# 同じモデルの条件違いを系統の平均に混ぜない
+COLS = [("nn_agree", ""), ("farthest_top", "5"), ("farthest_top", "10"), ("dist_rho", "")]
 CONDITION_MARKS = ("+sts", "@fp32")
-# 入力テキストの比較で，最近傍の同点とみなす類似度の差の下限．
-# 実際の幅は表現ごとに「同じテキストの2件のベクトルの距離の最大」（まとめて処理すると 1e-7 程度ずれる）とこの下限の大きい方
 NEAR = 1e-6
-# 入力テキストの比較は full と各成分の3組
 VARIANT_PAIRS = [("full", "title"), ("full", "steps"), ("full", "expect")]
-SIZE = {"sbert-all-mpnet-base-v2": 0.11, "bge-base-en-v1.5": 0.11, "e5-base-v2": 0.11,
-        "qwen3-0.6b": 0.6, "gte-qwen2-1.5b-instruct": 1.5, "stella-en-1.5b-v5": 1.5,
-        "qwen3-4b": 4.0, "gte-qwen2-7b-instruct": 7.0, "qwen3-8b": 8.0}
-# 土台にした事前学習モデル（stella は gte-qwen2-1.5b を元に学習している）
-FAMILY = {"sbert-all-mpnet-base-v2": "mpnet", "bge-base-en-v1.5": "bert",
-          "e5-base-v2": "bert", "qwen3-0.6b": "qwen3", "qwen3-4b": "qwen3",
-          "qwen3-8b": "qwen3", "gte-qwen2-1.5b-instruct": "qwen2",
-          "gte-qwen2-7b-instruct": "qwen2", "stella-en-1.5b-v5": "qwen2"}
-# 表の並び（語彙的手法のあと，土台のモデルごとに規模の順）
-FAMILY_ORDER = {"mpnet": 0, "bert": 1, "qwen3": 2, "qwen2": 3}
+FILES = ["range", "pairs", "mantel", "nn_matrix", "contrast", "farthest_curve", "variants"]
 
 
 def is_base(m):
     return not any(c in m for c in CONDITION_MARKS)
+
+
+def col_name(m, k):
+    return f"{m}@{k}" if k else m
 
 
 _CACHE = {}
@@ -56,7 +44,6 @@ _CACHE = {}
 def load(emb_dir, corpus_dir, m, app, variant):
     key = (m, app, variant)
     if key not in _CACHE:
-        # 指標のスクリプトと同じ読み込み（テストの並びもコーパスと照合する）
         X = _harness.load(emb_dir, corpus_dir, m, app, variant)
         if X is None:
             raise SystemExit(
@@ -78,8 +65,6 @@ def near_max(S, width):
 
 
 def same_text_gap(X, texts):
-    """同じテキストの2件のベクトル（長さ1）の距離の最大．同じテキストが無ければ 0．
-    2件と第三のテストとの類似度の差は，この距離を超えない（|a·c − b·c| ≦ ‖a − b‖）"""
     gap = 0.0
     for t in set(texts):
         idx = [i for i, u in enumerate(texts) if u == t]
@@ -120,7 +105,6 @@ def read_metric(metric, corpus, variant):
 
 
 def check_scope(M, corpus, variant):
-    """3本の CSV が同じ表現の組・同じアプリで計算されたかを確かめ，アプリ・外した条件・テスト数を返す"""
     sig = {}
     for m in METRICS:
         scope = {(r["corpus"], r["variant"], r["apps"], r["excluded"], r["n"], r["n_apps"]) for r in M[m].values()}
@@ -148,7 +132,6 @@ def check_scope(M, corpus, variant):
 
 
 def check_fresh(M, emb_dir, corpus, variant, apps):
-    """CSV が，計算に使った埋め込みより後に作られていることを確かめる"""
     models = sorted({m for r in M["nn_agree"].values() for m in (r["model_a"], r["model_b"])})
     paths = [os.path.join(emb_dir, m, f"{app}_{variant}.json") for m in models for app in apps]
     lack = [p for p in paths if not os.path.exists(p)]
@@ -166,52 +149,44 @@ def cell(r, col="value"):
     return float(v) if v not in ("", None) else float("nan")
 
 
-def ci(r):
-    return f"{cell(r):.3f} [{cell(r, 'value_lo'):.3f}, {cell(r, 'value_hi'):.3f}]"
-
-
 def row_of(M, metric, x, y, k=""):
-    """CSV の行を組の順によらず引く"""
     r = M[metric].get((x, y, k)) or M[metric].get((y, x, k))
     if r is None:
         raise SystemExit(f"{metric} の CSV に {x} ↔ {y}（k={k or '-'}）の行が無い")
     return r
 
 
-def rep_order(m):
-    """表の並び：語彙的手法（tfidf，lsa），土台のモデルの系統，規模，名前，前置き・精度の条件の順"""
-    b = m.replace("+sts", "").replace("@fp32", "")
-    cond = ("+sts" in m, "@fp32" in m)
-    if b in LEX:
-        return (0, 0 if b == "tfidf" else 1, 0.0, b, cond)
-    return (1, FAMILY_ORDER.get(FAMILY.get(b, ""), 9), SIZE.get(b, 99.0), b, cond)
-
-
 def ordered(p):
-    """組を表の並びの順にそろえる"""
-    return tuple(sorted(p, key=rep_order))
+    return tuple(sorted(p, key=ORDER.__getitem__))
 
 
-def sci(x):
-    """1e-06 ではなく 1e-6 と書く"""
-    m, e = f"{x:.0e}".split("e")
-    return f"{m}e{int(e)}"
+def to_csv(v):
+    if isinstance(v, str):
+        return v
+    if isinstance(v, (int, np.integer)):
+        return str(int(v))
+    return "" if v != v else f"{v:.6f}".replace("-0.000000", "0.000000")
 
 
-def trow(cells):
-    """Markdown の表の1行"""
-    return "| " + " | ".join(cells) + " |"
+def to_screen(v):
+    if isinstance(v, str):
+        return v
+    if isinstance(v, (int, np.integer)):
+        return str(int(v))
+    return "-" if v != v else f"{v:.3f}".replace("-0.000", "0.000")
 
 
-def f3(x):
-    """小数第3位．丸めて 0 になる負の値は 0.000 と書く"""
-    s = f"{x:.3f}"
-    return "0.000" if s == "-0.000" else s
+def show(title, head, rows):
+    cells = [head] + [[to_screen(v) for v in r] for r in rows]
+    width = [max(len(r[i]) for r in cells) for i in range(len(head))]
+    print(f"\n[{title}]")
+    for r in cells:
+        print("  ".join(s.ljust(w) if i == 0 else s.rjust(w) for i, (s, w) in enumerate(zip(r, width))))
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", "-o", default="results/rq1_summary.md")
+    ap.add_argument("--out-dir", "-o", default=os.path.join("results", "rq1_summary"))
     ap.add_argument("--corpus-name", default="bewt")
     ap.add_argument("--variant", default="full")
     ap.add_argument("--embeddings", "-e", default=None, help="既定 embeddings/{corpus_name}")
@@ -219,35 +194,28 @@ def main():
     a = ap.parse_args()
     emb = a.embeddings or os.path.join("embeddings", a.corpus_name)
     cdir = a.corpus or os.path.join("corpus", a.corpus_name, "json")
-    L = []
-    W = L.append
 
     M = {m: read_metric(m, a.corpus_name, a.variant) for m in METRICS}
     apps, excluded, n_tests = check_scope(M, a.corpus_name, a.variant)
     check_fresh(M, emb, a.corpus_name, a.variant, apps)
 
-    pairs_all = sorted((ordered((x, y)) for (x, y, _) in M["nn_agree"]), key=lambda p: (rep_order(p[0]), rep_order(p[1])))
-    reps = sorted({m for p in pairs_all for m in p}, key=rep_order)
+    pairs_all = sorted((ordered((x, y)) for (x, y, _) in M["nn_agree"]), key=lambda p: (ORDER[p[0]], ORDER[p[1]]))
+    reps = sorted({m for p in pairs_all for m in p}, key=ORDER.__getitem__)
     base = [m for m in reps if is_base(m)]
-    base_pairs = list(itertools.combinations(base, 2))  # base は表の並びなので，組も表の並び
+    base_pairs = list(itertools.combinations(base, 2))
     if not base_pairs:
-        raise SystemExit(f"前置きなし・配布された精度の表現が2つ未満（{' '.join(base) or 'なし'}）なので集計できない")
+        raise SystemExit(f"前置きなし・配布された精度の表現が2つ未満（{' '.join(base) or 'なし'}）")
     lex_emb = [p for p in base_pairs if (p[0] in LEX) != (p[1] in LEX)]
     emb_emb = [p for p in base_pairs if p[0] not in LEX and p[1] not in LEX]
     lex_lex = [p for p in base_pairs if p[0] in LEX and p[1] in LEX]
-    # 計算精度だけが違う組（bfloat16 ↔ float32）．表示は (配布の精度, float32) の順
     prec = sorted({(y, x) if x.endswith("@fp32") else (x, y) for x, y in pairs_all
-                   if x == y + "@fp32" or y == x + "@fp32"}, key=lambda p: rep_order(p[0]))
-    # 前置きだけが違う組（前置きなし ↔ +sts）．精度は同じもの同士
+                   if x == y + "@fp32" or y == x + "@fp32"}, key=lambda p: ORDER[p[0]])
     pfx = sorted({(m.replace("+sts", ""), m) for m in reps if "+sts" in m and m.replace("+sts", "") in reps},
-                 key=lambda p: (p[0].endswith("@fp32"), rep_order(p[0].replace("@fp32", ""))))
-    cols = [("nn_agree", "最近傍", "")] + [("farthest_top", f"最遠点@{k}", str(k)) for k in FARTHEST_KS] + [("dist_rho", "順位相関", "")]
+                 key=lambda p: ORDER[p[0]])
 
     def val(m, p, k=""):
         return cell(row_of(M, m, *p, k))
 
-    # 全ての組について，埋め込みから測り直した最近傍の一致と最遠点@5 が CSV と合うかを確かめる．
-    # 合わなければ，CSV を作ったあとに埋め込みか指標のスクリプトが変わった
     E = {m: {app: load(emb, cdir, m, app, a.variant) for app in apps} for m in reps}
     den = np.array([len(E[reps[0]][app]) for app in apps])
     if int(den.sum()) != n_tests:
@@ -265,169 +233,109 @@ def main():
                 raise SystemExit(f"{x} ↔ {y} の{lab}が，CSV（{v:.6f}）と埋め込みから測り直した値（{w:.6f}）で違う．" + chr(10)
                                  + "  CSV を作ったあとに埋め込みか指標のスクリプトが変わった．指標を測り直すこと．")
 
-    W("# RQ1 集計値（自動生成・BEWT）\n")
-    W("**この文書は `python tools/RQ1/rq1_summary.py` の出力である．手で編集しない．**\n")
-    W("報告書に載せる集計値はすべてここから引き写す．"
-      "手計算を挟まないことで，集計範囲の違う数値が混ざる事故を防ぐ．"
-      "節の構成は，一致の測定（P5-1）の結果を見る前に決めた（2026-10-02）．\n")
-    W(f"入力は `{METRIC_DIR}/{{指標}}/{a.corpus_name}_{a.variant}.csv`（`nn_agree`・`farthest_top`・`dist_rho`）．"
-      "3本の CSV が同じ表現の組・同じアプリで計算されたことを確かめてから集計している．\n")
-    W(f"アプリ {len(apps)}件（{' '.join(apps)}）・テスト {n_tests}件．表現 {len(reps)}件・組 {len(pairs_all)}．"
-      f"外した条件: {' '.join(excluded) if excluded else 'なし'}．\n")
-    W(f"95%区間は，アプリを単位にした t 区間（自由度 {len(apps) - 1}）．区間はアプリの取り方の揺れだけを表し，比べた表現の顔ぶれは固定として扱う．"
-      "偶然一致の水準は，片方の表現の結果についてテスト番号だけを並べ替えて測った値の平均．"
-      "最近傍はテスト単位，最遠点優先走査と順位相関はアプリ単位の平均（指標のスクリプトと同じ）．\n")
+    print(f"アプリ {len(apps)}件: {' '.join(apps)} / テスト {n_tests}件 / 表現 {len(reps)}件 / 組 {len(pairs_all)}"
+          f" / 外した条件: {' '.join(excluded) if excluded else 'なし'}")
+    print(f"照合: {len(pairs_all)}組の最近傍の一致と最遠点@5 が埋め込みからの測り直しと一致")
 
-    # 1. 一致の大きさ
-    W(f"\n## 1. 一致の大きさ（前置きなし・配布された精度の{len(base)}表現，{len(base_pairs)}組）\n")
-    W("表現を変えたときの一致を，2つの目盛りと並べる．下の目盛りは偶然一致の水準，上の目盛りは同じモデル・同じ入力で計算精度だけを変えた組"
-      "（表現の違いではなく，数値の誤差だけで生じる食い違いの目安）．"
-      + ("" if prec else "計算精度だけが違う組は，その条件を外したので無い．") + "\n")
-    W(trow(["指標", "偶然一致の水準", "最小", "中央値", "最大"] + [f"{x} ↔ @fp32" for x, _ in prec]))
-    W(trow(["---"] + ["---:"] * (4 + len(prec))))
-    for m, lab, k in cols:
+    T = {}
+
+    rows = []
+    for m, k in COLS:
         v = [val(m, p, k) for p in base_pairs]
-        chance = np.mean([cell(row_of(M, m, *p, k), "chance_mean") for p in base_pairs])
-        W(trow([lab, f3(chance), f3(min(v)), f3(np.median(v)), f3(max(v))] + [f3(val(m, p, k)) for p in prec]))
-    if prec:
-        W("\n計算精度だけが違う組の値と95%区間：\n")
-        W("| 組 | " + " | ".join(c[1] for c in cols) + " |")
-        W("|---|" + "---|" * len(cols))
-        for x, y in prec:
-            W(f"| {x} ↔ {y} | " + " | ".join(ci(row_of(M, m, x, y, k)) for m, _, k in cols) + " |")
+        chance = float(np.mean([cell(row_of(M, m, *p, k), "chance_mean") for p in base_pairs]))
+        rows.append([col_name(m, k), len(base_pairs), chance, min(v), float(np.median(v)), max(v)])
+    T["range"] = (["metric", "pairs", "chance_mean", "min", "median", "max"], rows)
+    show(f"range  前置きなし・配布された精度の{len(base)}表現", *T["range"])
+
+    head = ["kind", "model_a", "model_b"]
+    for m, k in COLS:
+        c = col_name(m, k)
+        head += [c, c + "_lo", c + "_hi"]
+    rows, screen = [], []
+    for kind, ps in (("precision", prec), ("prefix", pfx)):
+        for x, y in ps:
+            rs = [row_of(M, m, x, y, k) for m, k in COLS]
+            rows.append([kind, x, y] + [cell(r, c) for r in rs for c in ("value", "value_lo", "value_hi")])
+            screen.append([kind, f"{x} ↔ {y}"] + [f"{cell(r):.3f} [{cell(r, 'value_lo'):.3f}, {cell(r, 'value_hi'):.3f}]" for r in rs])
+    T["pairs"] = (head, rows)
+    show("pairs  値 [95%区間]", ["kind", "pair"] + [col_name(m, k) for m, k in COLS], screen)
+
     rho_rows = list(M["dist_rho"].values())
-    perms = {int(r["perms"]) for r in rho_rows}
-    n_apps = len(apps)
-    if len(perms) == 1:
-        perm = perms.pop()
-        floor = 1.0 / (perm + 1)
-        # 全アプリの p が下限のときの統合 p（CSV と同じ有効数字に丸めて比べる）
-        p_min = float(f"{float(_st.chi2.sf(-2.0 * n_apps * np.log(floor), 2 * n_apps)):.3e}")
-        at_floor = sum(float(r["p_fisher"]) <= p_min for r in rho_rows)
-        W(f"\n**Mantel 検定：** 全 {len(rho_rows)}組のうち {at_floor}組で，{n_apps}アプリのどれでも，"
-          f"{perm}回の並べ替えで観測値以上の順位相関が出なかった（アプリごとの p < {floor:.4f}）．"
-          + ("" if at_floor == len(rho_rows) else
-             f"残る組の統合 p の最大は {max(float(r['p_fisher']) for r in rho_rows):.3g}．")
-          + "統合 p の桁数は並べ替えの回数で決まるので，根拠にしない．\n")
-    else:
-        W(f"\n**Mantel 検定：** 並べ替えの回数が組によって違う（{sorted(perms)}）．指標を測り直すこと．\n")
+    perms = sorted({int(r["perms"]) for r in rho_rows})
+    if len(perms) != 1:
+        raise SystemExit(f"dist_rho の並べ替えの回数が組によって違う: {perms}．指標を測り直すこと．")
+    floor = 1.0 / (perms[0] + 1)
+    p_min = float(f"{float(stats.chi2.sf(-2.0 * len(apps) * np.log(floor), 2 * len(apps))):.3e}")
+    p_max = max(rho_rows, key=lambda r: float(r["p_fisher"]))["p_fisher"]
+    T["mantel"] = (["pairs", "apps", "perms", "p_floor", "pairs_all_apps_at_floor", "p_fisher_max"],
+                   [[len(rho_rows), len(apps), perms[0], f"{floor:.3e}", sum(float(r["p_fisher"]) <= p_min for r in rho_rows), p_max]])
+    show("mantel", *T["mantel"])
 
-    # 2. 11表現の一致の表
-    W(f"\n## 2. {len(base)}表現の一致の表（最近傍）\n")
-    W("各組の最近傍の一致．表の並び（語彙的手法，土台のモデルの系統，規模）は順位ではない．"
-      "区間の重なる組どうしの順位は述べない（区間は付録）．\n")
-    W("| | " + " | ".join(str(i + 1) for i in range(len(base))) + " |")
-    W("|---|" + "---:|" * len(base))
-    for i, x in enumerate(base):
-        W(f"| {i + 1} {x} | " + " | ".join("—" if x == y else f"{val('nn_agree', (x, y)):.3f}" for y in base) + " |")
+    T["nn_matrix"] = (["model"] + base,
+                      [[x] + ["" if x == y else val("nn_agree", (x, y)) for y in base] for x in base])
+    show("nn_matrix  最近傍の一致", [""] + [str(i + 1) for i in range(len(base))],
+         [[f"{i + 1} {x}"] + ["—" if x == y else val("nn_agree", (x, y)) for y in base] for i, x in enumerate(base)])
 
-    # 3. 系統の対比（主指標・前もって決めた1つ）
-    W("\n## 3. 系統の対比（主指標 `nn_agree`）\n")
+    head = ["app", "n", "emb_emb", "lex_emb", "diff", "diff_lo", "diff_hi"]
+    rows = []
     if emb_emb and lex_emb:
         ee = np.mean([hits[p] for p in emb_emb], axis=0)
         le = np.mean([hits[p] for p in lex_emb], axis=0)
         d, lo, hi = _harness.t_interval(ee - le, den)
-        per_app = (ee - le) / den
-        W("前もって決めた対比は1つだけ：埋め込みモデルどうしの組と，語彙的手法と埋め込みモデルの組で，最近傍の一致の平均（テスト単位）が違うか．"
-          "アプリごとの差に t 区間を付けた．\n")
-        W("| 組み合わせ | 組の数 | 最近傍の一致 |")
-        W("|---|---:|---:|")
-        W(f"| 埋込 × 埋込 | {len(emb_emb)} | {ee.sum() / den.sum():.3f} |")
-        W(f"| 語彙 × 埋込 | {len(lex_emb)} | {le.sum() / den.sum():.3f} |")
-        W(f"\n差（埋込 × 埋込 − 語彙 × 埋込）: **{d:+.3f}**，95%区間 [{lo:+.3f}, {hi:+.3f}]"
-          f"（{'0 を含む．差があるとは言えない' if lo <= 0 <= hi else '0 を含まない'}）．"
-          f"差が正のアプリ {int((per_app > 0).sum())} / 負のアプリ {int((per_app < 0).sum())} / 0 のアプリ {int((per_app == 0).sum())}"
-          f"（{len(apps)}アプリ中）．\n")
-    else:
-        W("埋め込みモデルどうしの組か，語彙的手法と埋め込みモデルの組が無い（条件を外したため）ので，この対比は出さない．\n")
-    for x, y in lex_lex:
-        why = "lsa は同じ TF-IDF の行列を20次元に縮めたものなので，" if {x, y} == {"tfidf", "lsa"} else ""
-        W(f"語彙的手法どうし（{x} ↔ {y}）は1組だけで，{why}系統としてはまとめず個別に示す：{ci(row_of(M, 'nn_agree', x, y))}．\n")
-    W("この結論は，ここで比べた表現について言えることで，埋め込みモデル一般には広げない．\n")
+        rows = [[app, int(n), e / n, l / n, (e - l) / n, "", ""] for app, n, e, l in zip(apps, den, ee, le)]
+        rows.append(["all", int(den.sum()), float(ee.sum() / den.sum()), float(le.sum() / den.sum()), d, lo, hi])
+    T["contrast"] = (head, rows)
+    show(f"contrast  最近傍の一致  埋込×埋込 {len(emb_emb)}組 / 語彙×埋込 {len(lex_emb)}組", *T["contrast"])
 
-    # 4. 最遠点優先走査の曲線
     ks = sorted({int(k) for (_, _, k) in M["farthest_top"]})
-    W(f"\n## 4. 最遠点優先走査で選ばれる上位k件の重なり（k=1〜{ks[-1]}）\n")
-    W("最遠点優先走査（farthest-first traversal; Gonzalez 1985）で各アプリの全テストを並べ，2つの表現で上位k件が重なる割合．"
-      "開始点は他との距離の総和が最大の1件（乱数を使わず同じ入力から同じ順を出すため）．選ぶ順だけを使い，k-center のクラスタリングはしない．"
-      "距離の 1 − コサイン類似度は三角不等式を満たさないので，Gonzalez の2近似の保証は前提にしない（順の一致だけを見るので要らない）．\n")
-    W("選ばれるテストの重なり（アプリごとの割合の平均）．k を大きくすると表現と関係なく重なるので，偶然一致の水準と並べて読む．"
-      "最遠点優先走査は小さな違いでも選ぶ順が変わるので，計算精度だけが違う組の曲線も並べる．k によって入れ替わるので，組み合わせの順位は述べない．\n")
-    W("| 組み合わせ | 組の数 | " + " | ".join(f"k={k}" for k in ks) + " |")
-    W("|---|---:|" + "---:|" * len(ks))
-    for lab, ps in [("埋込 × 埋込", emb_emb), ("語彙 × 埋込", lex_emb)] + [(f"{x} ↔ {y}", [(x, y)]) for x, y in lex_lex + prec]:
+    rows = []
+    for g, ps in (("埋込×埋込", emb_emb), ("語彙×埋込", lex_emb)):
         if ps:
-            W(f"| {lab} | {len(ps)} | " + " | ".join(f"{np.mean([val('farthest_top', p, str(k)) for p in ps]):.3f}" for k in ks) + " |")
-    W("| （偶然一致の水準） | | " + " | ".join(
-        f"{np.mean([cell(row_of(M, 'farthest_top', *p, str(k)), 'chance_mean') for p in base_pairs]):.3f}" for k in ks) + " |")
+            rows.append([g, "", "", len(ps)] + [float(np.mean([val("farthest_top", p, str(k)) for p in ps])) for k in ks])
+    for g, ps in (("語彙×語彙", lex_lex), ("精度だけ違う組", prec)):
+        for x, y in ps:
+            rows.append([g, x, y, 1] + [val("farthest_top", (x, y), str(k)) for k in ks])
+    rows.append(["偶然一致", "", "", len(base_pairs)]
+                + [float(np.mean([cell(row_of(M, "farthest_top", *p, str(k)), "chance_mean") for p in base_pairs])) for k in ks])
+    T["farthest_curve"] = (["group", "model_a", "model_b", "pairs"] + [f"k{k}" for k in ks], rows)
+    show("farthest_curve  最遠点@k の重なり", *T["farthest_curve"])
 
-    # 5. 前置きの効果
-    if pfx:
-        W("\n## 5. 前置きの効果（同じモデルの前置きあり・なし）\n")
-        W("同じモデル・同じ精度で，公式の類似度用の前置きを付けたかどうかだけが違う組．値の後ろの [ ] は95%区間．\n")
-        W("| 組 | " + " | ".join(c[1] for c in cols) + " |")
-        W("|---|" + "---|" * len(cols))
-        for x, y in pfx:
-            W(f"| {x} ↔ {y} | " + " | ".join(ci(row_of(M, m, x, y, k)) for m, _, k in cols) + " |")
-        ref = [val("nn_agree", p) for p in emb_emb]
-        W("\n読むときの目安（最近傍）：計算精度だけが違う組 "
-          + (" / ".join(f"{val('nn_agree', p):.3f}" for p in prec) if prec else "なし")
-          + (f"，別の埋め込みモデルどうし {len(ref)}組 {min(ref):.3f}〜{max(ref):.3f}（中央値 {np.median(ref):.3f}）" if ref else "")
-          + "．前置きの組がどちらに近いかで，前置きの影響が計算の誤差の程度か，モデルを替えるのに近いかを読む．\n")
-
-    # 6. 入力テキストの成分
     V = list(dict.fromkeys(v for p in VARIANT_PAIRS for v in p))
     vmods = [m for m in base
              if all(os.path.exists(os.path.join(emb, m, f"{app}_{v}.json")) for app in apps for v in V)]
-    if vmods:
-        W("\n## 6. 入力テキストの成分（full と各成分の最近傍の一致）\n")
-        W("同じ表現のまま，埋め込みに渡すテキストを full からテスト名だけ（title）・手順だけ（steps）・確認だけ（expect）に変えて，"
-          "最近傍が一致するテストの割合を測った．full の並びをどの成分が決めているかを見る．アプリごとに数えてから合計している．"
-          "同じテキストのテストがあると最近傍が1つに決まらないので，最大との類似度の差が「同点の幅」以内の相手を同点とみなす．"
-          "同点の幅は表現ごとに，同じテキストの2件のベクトルの距離の最大とした（2件と第三のテストとの類似度の差はこの距離を超えない）．"
-          f"ただし {sci(NEAR)} を下限にする．"
-          "同点からくじ引きで1つ選んだときの一致の期待値を出し，（ ）に同点の決め方しだいで動く最小〜最大を添えた．\n")
-        W(trow(["表現"] + [f"{x}↔{y}" for x, y in VARIANT_PAIRS] + ["同点の幅"]))
-        W(trow(["---"] * (len(VARIANT_PAIRS) + 1) + ["---:"]))
-        ties = {v: 0 for v in V}
-        for m in vmods:
-            X = {(app, v): load(emb, cdir, m, app, v) for app in apps for v in V}
-            gap = max(same_text_gap(X[(app, v)], corpus_texts(cdir, app, v)) for app in apps for v in V)
-            # 類似度は小数第12位で丸めてあるので，その分（1e-12）を足す
-            width = max(NEAR, gap + 1e-12)
-            T = {key: near_max(nn_of(x)[1], width) for key, x in X.items()}
-            for v in V:
-                ties[v] = max(ties[v], sum(int((T[(app, v)].sum(1) > 1).sum()) for app in apps))
-            cells = []
-            for x, y in VARIANT_PAIRS:
-                exp = lo = hi = tot = 0.0
-                for app in apps:
-                    tx, ty = T[(app, x)], T[(app, y)]
-                    both = (tx & ty).sum(1)
-                    exp += float((both / (tx.sum(1) * ty.sum(1))).sum())
-                    hi += int((both > 0).sum())
-                    lo += int(((tx.sum(1) == 1) & (ty.sum(1) == 1) & (both == 1)).sum())
-                    tot += len(tx)
-                cells.append(f"{exp / tot:.3f}（{lo / tot:.3f}〜{hi / tot:.3f}）")
-            W(trow([m] + cells + [f"{width:.1e}".replace("e-0", "e-")]))
-        W("\n同点のあるテストの数（表現の中で最大）: " + " / ".join(f"{v} {ties[v]}" for v in V) + "．"
-          "prestashop の expect は33件中12種しかなく，同点の処理が値に効く（実験計画書 4.4）．\n")
-        if len(vmods) < len(base):
-            W(f"（4バリアントがそろっていない表現は外した: {' '.join(m for m in base if m not in vmods)}）\n")
+    rows = []
+    for m in vmods:
+        X = {(app, v): load(emb, cdir, m, app, v) for app in apps for v in V}
+        gap = max(same_text_gap(X[(app, v)], corpus_texts(cdir, app, v)) for app in apps for v in V)
+        width = max(NEAR, gap + 1e-12)
+        Tn = {key: near_max(nn_of(x)[1], width) for key, x in X.items()}
+        ties = {v: sum(int((Tn[(app, v)].sum(1) > 1).sum()) for app in apps) for v in V}
+        for x, y in VARIANT_PAIRS:
+            exp = lo = hi = tot = 0.0
+            for app in apps:
+                tx, ty = Tn[(app, x)], Tn[(app, y)]
+                both = (tx & ty).sum(1)
+                exp += float((both / (tx.sum(1) * ty.sum(1))).sum())
+                hi += int((both > 0).sum())
+                lo += int(((tx.sum(1) == 1) & (ty.sum(1) == 1) & (both == 1)).sum())
+                tot += len(tx)
+            rows.append([m, x, y, exp / tot, lo / tot, hi / tot, f"{width:.3e}", ties[x], ties[y]])
+    T["variants"] = (["model", "variant_a", "variant_b", "expected", "min", "max", "tie_width", "ties_a", "ties_b"], rows)
+    show("variants  最近傍の一致（同点はくじ引きの期待値と最小・最大）", *T["variants"])
+    if len(vmods) < len(base):
+        print(f"4バリアントがそろわない表現（variants に無い）: {' '.join(m for m in base if m not in vmods)}")
 
-    # 付録. 全ての組
-    W(f"\n## 付録. 全 {len(pairs_all)}組の値\n")
-    W("値と95%区間（[ ]）．順位相関の列の後ろは Mantel 検定の統合 p．CSV にはすべての k と偶然一致の水準も入っている．\n")
-    W("| 組 | " + " | ".join(c[1] for c in cols) + " | 統合p |")
-    W("|---|" + "---|" * len(cols) + "---:|")
-    for x, y in pairs_all:
-        W(f"| {x} ↔ {y} | " + " | ".join(ci(row_of(M, m, x, y, k)) for m, _, k in cols)
-          + f" | {row_of(M, 'dist_rho', x, y)['p_fisher']} |")
-
-    os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
-    with open(a.out, "w", encoding="utf-8") as _f:
-        _f.write("\n".join(L) + "\n")
-    print(f"→ {a.out}")
+    os.makedirs(a.out_dir, exist_ok=True)
+    for name in FILES:
+        head, rows = T[name]
+        path = os.path.join(a.out_dir, f"{name}.csv")
+        tmp = path + ".tmp"
+        with open(tmp, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(head)
+            w.writerows([[to_csv(v) for v in r] for r in rows])
+        os.replace(tmp, path)
+    print(f"\n→ {a.out_dir}（{' '.join(f'{n}.csv' for n in FILES)}）")
 
 
 if __name__ == "__main__":
